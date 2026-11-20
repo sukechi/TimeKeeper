@@ -1,7 +1,7 @@
 // TimeKeeper Service Worker
 // 目的: アプリ本体とCDN資産をキャッシュし、オフラインでも真っ白にならないようにする。
 // 注意: index.html や資産の内容を更新したら CACHE_VERSION を上げること（古いキャッシュが破棄される）。
-const CACHE_VERSION = "tk-v1";
+const CACHE_VERSION = "tk-v2";
 
 const PRECACHE_URLS = [
   "./",
@@ -15,6 +15,7 @@ const PRECACHE_URLS = [
   "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
   "https://unpkg.com/@babel/standalone/babel.min.js",
   "https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js",
+  "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js",
   "https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap"
 ];
 

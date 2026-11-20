@@ -306,6 +306,187 @@
       return `${sign}${pad(h)}${pad(m)}${pad(s)}`;
     }
 
+    // ===== キューシート読み取り（写真OCR→タイマー一括作成） =====
+
+    // 時間表記のゆれをそろえる（全角数字・全角コロン・引用符など）
+    function normalizeTimeText(str) {
+      return String(str || "")
+        .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+        .replace(/：/g, ":")
+        .replace(/[＇’′]/g, "'")
+        .replace(/[＂”″]/g, '"');
+    }
+
+    const CUE_MAX_MS = 12 * 3600 * 1000; // 尺としてあり得る上限（12時間）
+
+    // テキスト中から時間トークンを1つ探す。見つかれば { ms, index, length }、なければ null。
+    // allowBareDigits=false のときは「330」のような数字だけの表記を対象にしない。
+    // ※正規表現の後読み・先読みは古いSafariで構文エラーになるため使わず、境界は手動で確認する。
+    function findDurationToken(text, allowBareDigits = true) {
+      const s = String(text || "");
+      const inRange = (ms) => ms > 0 && ms <= CUE_MAX_MS;
+      const charAt = (i) => (i >= 0 && i < s.length ? s[i] : "");
+      const tryPatterns = (regex, toMs, guard) => {
+        regex.lastIndex = 0;
+        let m;
+        while ((m = regex.exec(s)) !== null) {
+          if (guard && !guard(m)) continue;
+          const ms = toMs(m);
+          if (ms != null && inRange(ms)) return { ms, index: m.index, length: m[0].length };
+        }
+        return null;
+      };
+      const boundaryGuard = (m) => {
+        const prev = charAt(m.index - 1);
+        const next = charAt(m.index + m[0].length);
+        return !/[\d:]/.test(prev) && !/[\d:]/.test(next);
+      };
+      // 3分30秒
+      let r = tryPatterns(/(\d{1,3})\s*分\s*(\d{1,2})\s*秒/g,
+        (m) => (parseInt(m[1], 10) * 60 + parseInt(m[2], 10)) * 1000);
+      if (r) return r;
+      // 1時間30分 / 1時間30分20秒 / 2時間
+      r = tryPatterns(/(\d{1,2})\s*時間\s*(?:(\d{1,2})\s*分)?\s*(?:(\d{1,2})\s*秒)?/g,
+        (m) => (parseInt(m[1], 10) * 3600 + (m[2] ? parseInt(m[2], 10) * 60 : 0) + (m[3] ? parseInt(m[3], 10) : 0)) * 1000);
+      if (r) return r;
+      // 5分（直前が「時」のときは時刻の一部とみなして除外する）
+      r = tryPatterns(/(\d{1,4})\s*分/g, (m) => parseInt(m[1], 10) * 60000,
+        (m) => !/時\s*$/.test(s.slice(0, m.index)));
+      if (r) return r;
+      // 45秒
+      r = tryPatterns(/(\d{1,4})\s*秒/g, (m) => parseInt(m[1], 10) * 1000);
+      if (r) return r;
+      // 1:02:30
+      r = tryPatterns(/(\d{1,2}):(\d{2}):(\d{2})/g,
+        (m) => {
+          const mm = parseInt(m[2], 10), ss = parseInt(m[3], 10);
+          return (mm < 60 && ss < 60) ? (parseInt(m[1], 10) * 3600 + mm * 60 + ss) * 1000 : null;
+        }, boundaryGuard);
+      if (r) return r;
+      // 3:30
+      r = tryPatterns(/(\d{1,3}):(\d{2})/g,
+        (m) => {
+          const ss = parseInt(m[2], 10);
+          return ss < 60 ? (parseInt(m[1], 10) * 60 + ss) * 1000 : null;
+        }, boundaryGuard);
+      if (r) return r;
+      // 3'30"
+      r = tryPatterns(/(\d{1,3})\s*'\s*(\d{1,2})\s*"?/g,
+        (m) => {
+          const ss = parseInt(m[2], 10);
+          return ss < 60 ? (parseInt(m[1], 10) * 60 + ss) * 1000 : null;
+        });
+      if (r) return r;
+      // 330（HHMMSS）。年月日・円・通貨記号に隣接する数字は対象にしない
+      if (allowBareDigits) {
+        r = tryPatterns(/(\d{3,6})/g, (m) => {
+          const p = parseInputDigits(m[1]);
+          return p ? p.ms : null;
+        }, (m) => {
+          const prev = charAt(m.index - 1);
+          const next = charAt(m.index + m[0].length);
+          return !/[\d¥￥]/.test(prev) && !/[\d年月日円]/.test(next);
+        });
+        if (r) return r;
+      }
+      return null;
+    }
+
+    // 単独の時間表記（確認画面の時間欄など）をミリ秒に変換する。変換できなければ null。
+    function parseFlexibleDuration(str) {
+      if (!str) return null;
+      const s = normalizeTimeText(str).trim();
+      if (!s) return null;
+      if (/^\d{1,2}$/.test(s)) {
+        const ms = parseInt(s, 10) * 1000; // 「90」は90秒（1分30秒）として解釈する
+        return ms > 0 && ms <= CUE_MAX_MS ? ms : null;
+      }
+      const found = findDurationToken(s, true);
+      if (!found) return null;
+      const rest = (s.slice(0, found.index) + s.slice(found.index + found.length)).trim();
+      if (rest) return null; // 時間以外の文字が残っていたら不正とする
+      return found.ms;
+    }
+
+    // OCRテキストから「ラベル＋尺」の組を抽出する。時間のない行は読み飛ばす。
+    function parseCueSheetText(text) {
+      if (!text) return [];
+      const rows = [];
+      const lines = normalizeTimeText(text).split(/\r?\n/);
+      for (const rawLine of lines) {
+        if (rows.length >= 100) break;
+        const line = rawLine.trim();
+        if (!line) continue;
+        const found = findDurationToken(line, true);
+        if (!found) continue;
+        let label = (line.slice(0, found.index) + " " + line.slice(found.index + found.length)).trim();
+        // 累計時刻など、残った時間表記もラベルから取り除く（数字だけの表記は対象外）
+        for (let i = 0; i < 3; i++) {
+          const extra = findDurationToken(label, false);
+          if (!extra) break;
+          label = (label.slice(0, extra.index) + " " + label.slice(extra.index + extra.length)).trim();
+        }
+        label = label
+          .replace(/^[・\-—―\*※#>\s　]+/, "")
+          .replace(/^[\(（]?[\d]{1,3}[\.\)）、:：]?\s+/, "") // 先頭のキュー番号
+          .replace(/[:：|｜…‥\-—―]+\s*$/, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        rows.push({ label, ms: found.ms });
+      }
+      return rows;
+    }
+
+    // Tesseract.js（OCRライブラリ）を必要になった時点で読み込む（起動時には読み込まない）
+    const TESSERACT_CDN_URL = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    let tesseractLoadPromise = null;
+    function loadTesseractLib() {
+      if (window.Tesseract) return Promise.resolve(window.Tesseract);
+      if (tesseractLoadPromise) return tesseractLoadPromise;
+      tesseractLoadPromise = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = TESSERACT_CDN_URL;
+        script.onload = () => {
+          if (window.Tesseract) resolve(window.Tesseract);
+          else {
+            tesseractLoadPromise = null;
+            reject(new Error("OCRライブラリの読み込みに失敗しました"));
+          }
+        };
+        script.onerror = () => {
+          tesseractLoadPromise = null;
+          reject(new Error("OCRライブラリを読み込めませんでした。通信環境を確認して、もう一度お試しください"));
+        };
+        document.head.appendChild(script);
+      });
+      return tesseractLoadPromise;
+    }
+
+    // 大きすぎる写真をOCR用に縮小する（長辺2000px）。失敗したら元のファイルをそのまま返す。
+    function fileToScaledImage(file, maxSize = 2000) {
+      return new Promise((resolve) => {
+        let url;
+        try { url = URL.createObjectURL(file); } catch (e) { resolve(file); return; }
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const w = img.naturalWidth, h = img.naturalHeight;
+            const scale = Math.min(1, maxSize / Math.max(w, h));
+            if (!w || !h || scale >= 1) { URL.revokeObjectURL(url); resolve(file); return; }
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.round(w * scale);
+            canvas.height = Math.round(h * scale);
+            canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+            URL.revokeObjectURL(url);
+            if (canvas.toBlob) canvas.toBlob((b) => resolve(b || file), "image/jpeg", 0.9);
+            else resolve(file);
+          } catch (e) { URL.revokeObjectURL(url); resolve(file); }
+        };
+        img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+        img.src = url;
+      });
+    }
+
     function useLowPowerTrigger(mode = "low") {
       const [, setTick] = useState(0);
       const timerRef = useRef(null);
@@ -1983,6 +2164,17 @@
       const tmWordModalInputRef = useRef(null);
       const tmPresetModalInputRef = useRef(null);
 
+      // キューシート読み取り（写真OCR→タイマー一括作成）
+      const [cueOpen, setCueOpen] = useState(false);
+      const [cuePhase, setCuePhase] = useState("pick"); // pick | working | done | error
+      const [cueStatusText, setCueStatusText] = useState("");
+      const [cueProgress, setCueProgress] = useState(0);
+      const [cueRows, setCueRows] = useState([]);
+      const [cueError, setCueError] = useState("");
+      const cueFileRef = useRef(null);
+      const cueCameraRef = useRef(null);
+      const cueAbortRef = useRef(false);
+
       const tmWordModalViewport = useKeyboardSafeViewport(wordEditTarget !== null);
 
       const isAnyTimerRunning = timers.some(t => t.running);
@@ -2089,6 +2281,74 @@
         setLabelVal("");
         setCustomInput("");
         setSelectedPresetMs(0);
+      };
+
+      // ===== キューシート読み取り =====
+      const openCueSheet = () => {
+        cueAbortRef.current = false;
+        setCuePhase("pick");
+        setCueRows([]);
+        setCueError("");
+        setCueProgress(0);
+        setCueStatusText("");
+        setCueOpen(true);
+      };
+
+      const closeCueSheet = () => {
+        cueAbortRef.current = true; // 進行中の読み取り結果は破棄する
+        setCueOpen(false);
+      };
+
+      const handleCueFileSelected = async (e) => {
+        const file = e.target.files && e.target.files[0];
+        e.target.value = ""; // 同じ写真を選び直せるようにリセット
+        if (!file) return;
+        cueAbortRef.current = false;
+        setCuePhase("working");
+        setCueProgress(0);
+        setCueStatusText("読み取り部品を準備中…");
+        try {
+          const Tesseract = await loadTesseractLib();
+          if (cueAbortRef.current) return;
+          const image = await fileToScaledImage(file);
+          if (cueAbortRef.current) return;
+          setCueStatusText("日本語データを読み込み中…");
+          const result = await Tesseract.recognize(image, "jpn", {
+            logger: (m) => {
+              if (cueAbortRef.current || !m) return;
+              if (m.status === "recognizing text") {
+                setCueStatusText("文字を読み取り中…");
+                setCueProgress(Math.round((m.progress || 0) * 100));
+              } else if (typeof m.progress === "number") {
+                setCueProgress(Math.round(m.progress * 100));
+              }
+            }
+          });
+          if (cueAbortRef.current) return;
+          const text = (result && result.data && result.data.text) || "";
+          const extracted = parseCueSheetText(text);
+          setCueRows(extracted.map((r) => ({ label: r.label, timeText: formatTime(r.ms) })));
+          setCuePhase("done");
+        } catch (err) {
+          if (cueAbortRef.current) return;
+          setCueError((err && err.message) ? err.message : "読み取りに失敗しました");
+          setCuePhase("error");
+        }
+      };
+
+      const updateCueRow = (idx, patch) => setCueRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+      const removeCueRow = (idx) => setCueRows((prev) => prev.filter((_, i) => i !== idx));
+      const addCueRow = () => setCueRows((prev) => [...prev, { label: "", timeText: "" }]);
+
+      const validCueRows = cueRows
+        .map((r) => ({ label: (r.label || "").trim(), ms: parseFlexibleDuration(r.timeText) }))
+        .filter((r) => r.ms && r.ms > 0);
+
+      const createTimersFromCue = () => {
+        if (validCueRows.length === 0) return;
+        // 既存のタイマー追加と同じ形で作るため、状態保存・復元ともそのまま整合する
+        validCueRows.forEach((r) => addTimerDirect(r.ms, r.label));
+        closeCueSheet();
       };
 
       const reorderTimers = (index, direction) => {
@@ -2275,6 +2535,14 @@
                 />
               ))}
             </div>
+
+            {/* 6. キューシート読み取り */}
+            <button
+              onClick={openCueSheet}
+              className="mt-1.5 w-full py-2 border border-dashed border-blueCustom/60 rounded-lg text-blueCustom text-[11px] font-sans font-bold cursor-pointer bg-blueCustom/5"
+            >
+              📷 キューシート読み取り <span className="opacity-60 font-normal">写真からタイマーを一括作成</span>
+            </button>
           </div>
 
           {/* 基準タイマー選択中インジケーター */}
@@ -2529,6 +2797,195 @@
               </div>
             </div>
           )}
+
+          {/* キューシート読み取りモーダル */}
+          {cueOpen && (
+            <div
+              className="fixed inset-0 z-[500] bg-black/90 backdrop-blur-[6px] flex items-start justify-center pt-[7vh] p-4"
+              onClick={() => { if (cuePhase !== "working") closeCueSheet(); }}
+            >
+              <div
+                className="bg-card border border-border rounded-[20px] p-[18px] w-full max-w-[340px] shadow-2xl max-h-[84vh] overflow-y-auto"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div style={{ ...labelStyle, marginBottom: 12 }}>キューシート読み取り</div>
+
+                {cuePhase === "pick" && (
+                  <div>
+                    <p className="text-[11px] text-mutedLight font-sans leading-relaxed mb-3">
+                      進行表（キューシート）の写真から、コーナー名と尺を読み取ってタイマーをまとめて作ります。読み取りはこの端末の中だけで行われ、写真が外部に送られることはありません。
+                    </p>
+                    <div className="flex gap-2 mb-2.5">
+                      <button
+                        onClick={() => cueCameraRef.current && cueCameraRef.current.click()}
+                        className="flex-1 py-2.5 bg-blueCustom rounded-[10px] text-bg text-xs tracking-[1px] font-sans font-bold cursor-pointer border-none"
+                      >
+                        📷 写真を撮る
+                      </button>
+                      <button
+                        onClick={() => cueFileRef.current && cueFileRef.current.click()}
+                        className="flex-1 py-2.5 bg-surface border border-border rounded-[10px] text-whiteCustom text-xs tracking-[1px] font-sans font-bold cursor-pointer"
+                      >
+                        🖼 写真を選ぶ
+                      </button>
+                    </div>
+                    <p className="text-[9px] text-mutedCustom font-sans leading-relaxed mb-3">
+                      ※初回のみ、読み取り部品と日本語データの取得にオンライン環境が必要です。明るい場所で、紙全体がまっすぐ写るように撮ると読み取りやすくなります。
+                    </p>
+                    <button
+                      onClick={closeCueSheet}
+                      className="w-full py-2 bg-surface border border-border rounded-[10px] text-mutedCustom text-xs font-sans cursor-pointer"
+                    >
+                      ✕ 閉じる
+                    </button>
+                  </div>
+                )}
+
+                {cuePhase === "working" && (
+                  <div>
+                    <p className="text-[12px] text-whiteCustom font-sans mb-2">{cueStatusText || "処理中…"}</p>
+                    <div className="w-full h-2 bg-surface rounded-full overflow-hidden mb-1.5">
+                      <div className="h-full bg-blueCustom rounded-full" style={{ width: `${cueProgress}%`, transition: "width 0.2s" }} />
+                    </div>
+                    <p className="text-[10px] text-mutedCustom font-mono mb-3">{cueProgress}%</p>
+                    <button
+                      onClick={closeCueSheet}
+                      className="w-full py-2 bg-surface border border-border rounded-[10px] text-mutedCustom text-xs font-sans cursor-pointer"
+                    >
+                      キャンセル
+                    </button>
+                  </div>
+                )}
+
+                {cuePhase === "error" && (
+                  <div>
+                    <p className="text-[12px] text-redCustom font-sans leading-relaxed mb-3">⚠ {cueError}</p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setCuePhase("pick")}
+                        className="flex-1 py-2.5 bg-blueCustom rounded-[10px] text-bg text-xs font-sans font-bold cursor-pointer border-none"
+                      >
+                        撮り直す
+                      </button>
+                      <button
+                        onClick={closeCueSheet}
+                        className="py-2.5 px-3.5 bg-surface border border-border rounded-[10px] text-mutedCustom text-xs font-sans cursor-pointer"
+                      >
+                        ✕ 閉じる
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {cuePhase === "done" && (
+                  <div>
+                    {cueRows.length === 0 ? (
+                      <p className="text-[11px] text-amberCustom font-sans leading-relaxed mb-3">
+                        時間の書かれた行が見つかりませんでした。撮り直すか、下の「＋ 行を追加」で手入力してください。
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-mutedLight font-sans leading-relaxed mb-2.5">
+                        内容を確認してください。開始時刻のような時刻も「尺」として拾っている場合があります。不要な行は削除し、間違いは直接直せます。時間は「3:30」「3分30秒」「330」などの形式で入力できます。
+                      </p>
+                    )}
+                    <div className="flex flex-col gap-1.5 mb-2.5">
+                      {cueRows.map((row, idx) => {
+                        const parsedRow = parseFlexibleDuration(row.timeText);
+                        const rowInvalid = row.timeText.trim() !== "" && !parsedRow;
+                        return (
+                          <div key={idx} className="flex gap-1.5 items-center">
+                            <input
+                              type="text"
+                              name={`cue-label-${idx}`}
+                              readOnly
+                              onPointerDown={(e) => e.target.removeAttribute("readonly")}
+                              autoComplete="off"
+                              autoCorrect="off"
+                              autoCapitalize="none"
+                              spellCheck={false}
+                              data-form-type="other"
+                              data-lpignore="true"
+                              value={row.label}
+                              onChange={(e) => updateCueRow(idx, { label: e.target.value })}
+                              placeholder="コーナー名"
+                              className="flex-1 min-w-0 bg-bg border border-border rounded-lg px-2 py-1.5 text-whiteCustom text-[12px] font-sans outline-none"
+                            />
+                            <input
+                              type="text"
+                              name={`cue-time-${idx}`}
+                              autoComplete="off"
+                              autoCorrect="off"
+                              autoCapitalize="none"
+                              spellCheck={false}
+                              data-form-type="other"
+                              data-lpignore="true"
+                              value={row.timeText}
+                              onChange={(e) => updateCueRow(idx, { timeText: e.target.value })}
+                              placeholder="3:30"
+                              className={`w-[76px] shrink-0 bg-bg border rounded-lg px-1.5 py-1.5 text-[12px] font-mono text-center outline-none ${rowInvalid ? "border-redCustom text-redCustom" : "border-border text-blueCustom"}`}
+                            />
+                            <span className="w-[40px] shrink-0 text-[9px] font-mono text-mutedCustom text-right">
+                              {parsedRow ? formatTime(parsedRow) : "―"}
+                            </span>
+                            <button
+                              onClick={() => removeCueRow(idx)}
+                              className="shrink-0 w-6 h-6 bg-surface border border-border rounded-md text-mutedCustom text-[11px] cursor-pointer"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <button
+                      onClick={addCueRow}
+                      className="w-full py-1.5 mb-3 border border-dashed border-mutedCustom rounded-lg text-mutedCustom text-[10px] font-sans cursor-pointer"
+                    >
+                      ＋ 行を追加
+                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={createTimersFromCue}
+                        disabled={validCueRows.length === 0}
+                        className="flex-1 py-2.5 bg-blueCustom rounded-[10px] text-bg text-[11px] tracking-[1px] font-sans font-bold cursor-pointer border-none disabled:opacity-40"
+                      >
+                        ✓ この内容でタイマーを作る（{validCueRows.length}件）
+                      </button>
+                      <button
+                        onClick={() => setCuePhase("pick")}
+                        className="py-2.5 px-3 bg-surface border border-border rounded-[10px] text-mutedLight text-xs font-sans cursor-pointer"
+                      >
+                        撮り直す
+                      </button>
+                      <button
+                        onClick={closeCueSheet}
+                        className="py-2.5 px-3 bg-surface border border-border rounded-[10px] text-mutedCustom text-xs font-sans cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* キューシート読み取り用ファイル入力（非表示） */}
+          <input
+            ref={cueCameraRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={handleCueFileSelected}
+            style={{ display: "none" }}
+          />
+          <input
+            ref={cueFileRef}
+            type="file"
+            accept="image/*"
+            onChange={handleCueFileSelected}
+            style={{ display: "none" }}
+          />
         </div>
       );
     }
