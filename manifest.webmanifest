@@ -1,0 +1,1 @@
+{"background_color":"#06060e","description":"放送・イベント進行向けタイムキープアプリ","display":"standalone","icons":[{"sizes":"192x192","src":"./icon-192.png","type":"image/png"},{"sizes":"512x512","src":"./icon-512.png","type":"image/png"}],"lang":"ja","name":"Timekeeper iPhone","scope":"./","short_name":"Timekeeper","start_url":"./index.html","theme_color":"#06060e"}
