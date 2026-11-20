@@ -306,6 +306,22 @@
       return `${sign}${pad(h)}${pad(m)}${pad(s)}`;
     }
 
+    // CD（指定時刻カウントダウン）の目標を1件作る。CountdownManager の addTarget と同じ規則：
+    // rawTime は6桁HHMMSS形式（parseInputDigits で解釈）、仮想時刻（timeOffset 込み）の当日に合わせ、
+    // 既に過ぎていたら翌日に回す。解釈できなければ null。
+    function buildCountdownTarget(rawTime, label, timeOffset = 0) {
+      const parsed = parseInputDigits(rawTime);
+      if (!parsed) return null;
+      const virtualNow = Date.now() + timeOffset;
+      const now = new Date(virtualNow);
+      now.setHours(parsed.h, parsed.m, parsed.s, 0);
+      let targetMs = now.getTime();
+      if (targetMs <= virtualNow) {
+        targetMs += 86400000;
+      }
+      return { id: Date.now() + Math.random(), target: targetMs, label };
+    }
+
     // ===== キューシート読み取り（写真OCR→タイマー一括作成） =====
 
     // 時間表記のゆれをそろえる（全角数字・全角コロン・引用符など）
@@ -408,7 +424,132 @@
       return found.ms;
     }
 
-    // OCRテキストから「ラベル＋尺」の組を抽出する。時間のない行は読み飛ばす。
+    // 時刻らしい行だと判断する手がかりになる語（番組の開始・終了などの絶対時刻はCDに入れる）
+    const CUE_CLOCK_KEYWORDS = ["開始", "終了", "スタート", "エンド", "本番", "入り", "ハケ", "集合", "開演", "終演", "開場"];
+
+    // 文字列の一部（{index, length}）を同じ長さの空白に置き換える。位置（index）がずれないため、
+    // 複数トークンを扱っても残りの探索範囲がそのまま使える。
+    function maskSpan(text, span) {
+      const s = String(text || "");
+      if (!span) return s;
+      return s.slice(0, span.index) + " ".repeat(span.length) + s.slice(span.index + span.length);
+    }
+
+    // 強い時刻トークンを1つ探す。見つかれば { h, m, s, index, length }、なければ null。
+    // ・「18時30分」型は常に時刻（「18時間」のような尺表記は除く）
+    // ・「18:03:30」型は13時以降（尺ではあり得ない）か、キーワードのある行でのみ時刻
+    // ・「18:30」型と「1830」型はキーワードのある行でのみ時刻（通常行では尺を優先する）
+    // ※後読み・先読みは使わず、境界は手動で確認する（findDurationToken と同方針）。
+    function findClockToken(text, hasKeyword) {
+      const s = String(text || "");
+      const charAt = (i) => (i >= 0 && i < s.length ? s[i] : "");
+      const boundaryGuard = (m) => {
+        const prev = charAt(m.index - 1);
+        const next = charAt(m.index + m[0].length);
+        return !/[\d:]/.test(prev) && !/[\d:]/.test(next);
+      };
+      const scan = (regex, toClock, guard) => {
+        regex.lastIndex = 0;
+        let m;
+        while ((m = regex.exec(s)) !== null) {
+          if (guard && !guard(m)) continue;
+          const c = toClock(m);
+          if (c) return { h: c.h, m: c.m, s: c.s, index: m.index, length: m[0].length };
+        }
+        return null;
+      };
+      // 18時30分 / 18時30分20秒 / 18時
+      let r = scan(/(\d{1,2})\s*時\s*(?:(\d{1,2})\s*分)?\s*(?:(\d{1,2})\s*秒)?/g,
+        (m) => {
+          const h = parseInt(m[1], 10);
+          const mi = m[2] ? parseInt(m[2], 10) : 0;
+          const se = m[3] ? parseInt(m[3], 10) : 0;
+          return (h <= 23 && mi < 60 && se < 60) ? { h, m: mi, s: se } : null;
+        },
+        (m) => {
+          if (/[\d]/.test(charAt(m.index - 1))) return false;
+          // 「分」まで無いのに直後が「間」なら尺（○時間）の始まりなので時刻にしない
+          if (!m[2] && charAt(m.index + m[0].length) === "間") return false;
+          return true;
+        });
+      if (r) return r;
+      // 18:03:30
+      r = scan(/(\d{1,2}):(\d{2}):(\d{2})/g,
+        (m) => {
+          const h = parseInt(m[1], 10), mi = parseInt(m[2], 10), se = parseInt(m[3], 10);
+          return (mi < 60 && se < 60 && h <= 23 && (h >= 13 || hasKeyword)) ? { h, m: mi, s: se } : null;
+        }, boundaryGuard);
+      if (r) return r;
+      if (hasKeyword) {
+        // 18:30（キーワードのある行のみ）
+        r = scan(/(\d{1,2}):(\d{2})/g,
+          (m) => {
+            const h = parseInt(m[1], 10), mi = parseInt(m[2], 10);
+            return (h <= 23 && mi < 60) ? { h, m: mi, s: 0 } : null;
+          }, boundaryGuard);
+        if (r) return r;
+        // 1830 / 183000（キーワードのある行のみ。年・金額に隣接する数字は対象外）
+        r = scan(/(\d{6}|\d{4})/g,
+          (m) => {
+            const d = m[1];
+            const h = parseInt(d.slice(0, 2), 10);
+            const mi = parseInt(d.slice(2, 4), 10);
+            const se = d.length === 6 ? parseInt(d.slice(4, 6), 10) : 0;
+            return (h <= 23 && mi < 60 && se < 60) ? { h, m: mi, s: se } : null;
+          },
+          (m) => {
+            const prev = charAt(m.index - 1);
+            const next = charAt(m.index + m[0].length);
+            return !/[\d¥￥]/.test(prev) && !/[\d年月日円]/.test(next);
+          });
+        if (r) return r;
+      }
+      return null;
+    }
+
+    // 弱い時刻候補：13〜23時の「18:03」型。単独では尺を優先し、同じ行に別の尺がある
+    // （＝時刻列＋尺列の併記）場合だけ時刻とみなす。判定は呼び出し側で行う。
+    function findWeakClockToken(text) {
+      const s = String(text || "");
+      const re = /(\d{1,2}):(\d{2})/g;
+      let m;
+      while ((m = re.exec(s)) !== null) {
+        const prev = m.index > 0 ? s[m.index - 1] : "";
+        const next = m.index + m[0].length < s.length ? s[m.index + m[0].length] : "";
+        if (/[\d:]/.test(prev) || /[\d:]/.test(next)) continue;
+        const h = parseInt(m[1], 10), mi = parseInt(m[2], 10);
+        if (h >= 13 && h <= 23 && mi < 60) return { h, m: mi, s: 0, index: m.index, length: m[0].length };
+      }
+      return null;
+    }
+
+    // 単独の時刻表記（確認画面でCD行の時間欄など）を { h, m, s } に変換する。変換できなければ null。
+    function parseClockTime(str) {
+      if (!str) return null;
+      const s = normalizeTimeText(str).replace(/\s+/g, "");
+      if (!s) return null;
+      const ok = (h, mi, se) => (h <= 23 && mi < 60 && se < 60) ? { h, m: mi, s: se } : null;
+      let m = s.match(/^(\d{1,2})時(?:(\d{1,2})分)?(?:(\d{1,2})秒)?$/);
+      if (m) return ok(parseInt(m[1], 10), m[2] ? parseInt(m[2], 10) : 0, m[3] ? parseInt(m[3], 10) : 0);
+      m = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+      if (m) return ok(parseInt(m[1], 10), parseInt(m[2], 10), m[3] ? parseInt(m[3], 10) : 0);
+      if (/^\d{3}$/.test(s)) return ok(parseInt(s[0], 10), parseInt(s.slice(1), 10), 0);
+      if (/^\d{4}$/.test(s)) return ok(parseInt(s.slice(0, 2), 10), parseInt(s.slice(2), 10), 0);
+      if (/^\d{6}$/.test(s)) return ok(parseInt(s.slice(0, 2), 10), parseInt(s.slice(2, 4), 10), parseInt(s.slice(4), 10));
+      return null;
+    }
+
+    // 時刻 { h, m, s } を表示用テキストにする（秒が0なら省略）
+    function formatClockText(clock) {
+      if (!clock) return "";
+      return clock.s > 0
+        ? `${pad(clock.h)}:${pad(clock.m)}:${pad(clock.s)}`
+        : `${pad(clock.h)}:${pad(clock.m)}`;
+    }
+
+    // OCRテキストから「ラベル＋尺／時刻」の組を抽出する。時間のない行は読み飛ばす。
+    // 尺は { label, kind: "tm", ms }、時刻は { label, kind: "cd", clock: { h, m, s } } を返す。
+    // 1行に尺と時刻の両方がある場合は両方を拾う（確認画面で振り分け直せる）。
     function parseCueSheetText(text) {
       if (!text) return [];
       const rows = [];
@@ -417,14 +558,24 @@
         if (rows.length >= 100) break;
         const line = rawLine.trim();
         if (!line) continue;
-        const found = findDurationToken(line, true);
-        if (!found) continue;
-        let label = (line.slice(0, found.index) + " " + line.slice(found.index + found.length)).trim();
-        // 累計時刻など、残った時間表記もラベルから取り除く（数字だけの表記は対象外）
+        const hasKeyword = CUE_CLOCK_KEYWORDS.some((k) => line.includes(k));
+        let clock = findClockToken(line, hasKeyword);
+        if (!clock) {
+          // 「18:03」のような時刻候補は、同じ行に別の尺がある場合だけ時刻とみなす（単独なら尺優先）
+          const weak = findWeakClockToken(line);
+          if (weak && findDurationToken(maskSpan(line, weak), true)) clock = weak;
+        }
+        // 尺は時刻トークンを除いた範囲から探す（「18時30分」内の「30分」を尺と誤認しないため）
+        const duration = findDurationToken(clock ? maskSpan(line, clock) : line, true);
+        if (!clock && !duration) continue;
+        let label = line;
+        if (clock) label = maskSpan(label, clock);
+        if (duration) label = maskSpan(label, duration);
+        // 累計時刻など、残った時間・時刻表記もラベルから取り除く（数字だけの表記は対象外）
         for (let i = 0; i < 3; i++) {
-          const extra = findDurationToken(label, false);
+          const extra = findDurationToken(label, false) || findClockToken(label, false);
           if (!extra) break;
-          label = (label.slice(0, extra.index) + " " + label.slice(extra.index + extra.length)).trim();
+          label = maskSpan(label, extra);
         }
         label = label
           .replace(/^[・\-—―\*※#>\s　]+/, "")
@@ -432,7 +583,8 @@
           .replace(/[:：|｜…‥\-—―]+\s*$/, "")
           .replace(/\s+/g, " ")
           .trim();
-        rows.push({ label, ms: found.ms });
+        if (duration) rows.push({ label, kind: "tm", ms: duration.ms });
+        if (clock) rows.push({ label, kind: "cd", clock: { h: clock.h, m: clock.m, s: clock.s } });
       }
       return rows;
     }
@@ -1306,16 +1458,8 @@
       }, [clipboardVal]);
 
       const addTarget = (rawTime, label) => {
-        const parsed = parseInputDigits(rawTime);
-        if (!parsed) return;
-        const virtualNow = Date.now() + timeOffset;
-        const now = new Date(virtualNow);
-        now.setHours(parsed.h, parsed.m, parsed.s, 0);
-        let targetMs = now.getTime();
-        if (targetMs <= virtualNow) {
-          targetMs += 86400000;
-        }
-        setTargets(prev => [...prev, { id: Date.now() + Math.random(), target: targetMs, label }]);
+        const t = buildCountdownTarget(rawTime, label, timeOffset);
+        if (t) setTargets(prev => [...prev, t]);
       };
 
       const handleAddSubmit = () => {
@@ -2143,6 +2287,7 @@
     function TimerManager({ 
       timers, 
       setTimers, 
+      setCountdownTargets,
       clipboardVal, 
       stealSec, 
       setStealSec, 
@@ -2327,7 +2472,9 @@
           if (cueAbortRef.current) return;
           const text = (result && result.data && result.data.text) || "";
           const extracted = parseCueSheetText(text);
-          setCueRows(extracted.map((r) => ({ label: r.label, timeText: formatTime(r.ms) })));
+          setCueRows(extracted.map((r) => (r.kind === "cd"
+            ? { label: r.label, kind: "cd", timeText: formatClockText(r.clock) }
+            : { label: r.label, kind: "tm", timeText: formatTime(r.ms) })));
           setCuePhase("done");
         } catch (err) {
           if (cueAbortRef.current) return;
@@ -2338,16 +2485,41 @@
 
       const updateCueRow = (idx, patch) => setCueRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
       const removeCueRow = (idx) => setCueRows((prev) => prev.filter((_, i) => i !== idx));
-      const addCueRow = () => setCueRows((prev) => [...prev, { label: "", timeText: "" }]);
+      const addCueRow = () => setCueRows((prev) => [...prev, { label: "", timeText: "", kind: "tm" }]);
+      const toggleCueKind = (idx) => setCueRows((prev) => prev.map((r, i) => (i === idx ? { ...r, kind: r.kind === "cd" ? "tm" : "cd" } : r)));
 
-      const validCueRows = cueRows
-        .map((r) => ({ label: (r.label || "").trim(), ms: parseFlexibleDuration(r.timeText) }))
-        .filter((r) => r.ms && r.ms > 0);
+      // 確認画面の各行を、振り分け（kind）に応じた解釈で検証する
+      const parsedCueRows = cueRows.map((r) => {
+        const label = (r.label || "").trim();
+        if (r.kind === "cd") {
+          const clock = parseClockTime(r.timeText);
+          return { label, kind: "cd", clock, valid: !!clock };
+        }
+        const ms = parseFlexibleDuration(r.timeText);
+        return { label, kind: "tm", ms, valid: !!(ms && ms > 0) };
+      });
+      const validTmCueRows = parsedCueRows.filter((r) => r.valid && r.kind === "tm");
+      const validCdCueRows = parsedCueRows.filter((r) => r.valid && r.kind === "cd");
 
-      const createTimersFromCue = () => {
-        if (validCueRows.length === 0) return;
-        // 既存のタイマー追加と同じ形で作るため、状態保存・復元ともそのまま整合する
-        validCueRows.forEach((r) => addTimerDirect(r.ms, r.label));
+      const cueGroups = [
+        { kind: "tm", title: "タイマー（尺）" },
+        { kind: "cd", title: "カウントダウン（時刻）" }
+      ];
+
+      const createFromCueSheet = () => {
+        if (validTmCueRows.length + validCdCueRows.length === 0) return;
+        // TM分は既存のタイマー追加と同じ形で作るため、状態保存・復元ともそのまま整合する
+        validTmCueRows.forEach((r) => addTimerDirect(r.ms, r.label));
+        // CD分は CountdownManager の追加と同じ規則（buildCountdownTarget）で作り、CDの状態へ直接追加する
+        if (validCdCueRows.length > 0 && setCountdownTargets) {
+          const newTargets = [];
+          validCdCueRows.forEach((r) => {
+            const raw = `${pad(r.clock.h)}${pad(r.clock.m)}${pad(r.clock.s)}`;
+            const t = buildCountdownTarget(raw, r.label, timeOffset);
+            if (t) newTargets.push(t);
+          });
+          if (newTargets.length > 0) setCountdownTargets((prev) => [...prev, ...newTargets]);
+        }
         closeCueSheet();
       };
 
@@ -2813,7 +2985,7 @@
                 {cuePhase === "pick" && (
                   <div>
                     <p className="text-[11px] text-mutedLight font-sans leading-relaxed mb-3">
-                      進行表（キューシート）の写真から、コーナー名と尺を読み取ってタイマーをまとめて作ります。読み取りはこの端末の中だけで行われ、写真が外部に送られることはありません。
+                      進行表（キューシート）の写真から、コーナー名と尺・時刻を読み取って、タイマーとカウントダウンをまとめて作ります。開始・終了などの時刻はカウントダウンに入ります。読み取りはこの端末の中だけで行われ、写真が外部に送られることはありません。
                     </p>
                     <div className="flex gap-2 mb-2.5">
                       <button
@@ -2885,58 +3057,76 @@
                       </p>
                     ) : (
                       <p className="text-[10px] text-mutedLight font-sans leading-relaxed mb-2.5">
-                        内容を確認してください。開始時刻のような時刻も「尺」として拾っている場合があります。不要な行は削除し、間違いは直接直せます。時間は「3:30」「3分30秒」「330」などの形式で入力できます。
+                        内容を確認してください。尺は「タイマー（TM）」、開始・終了などの時刻は「カウントダウン（CD）」に入ります。各行の TM／CD ボタンで振り分けを変えられます。不要な行は削除し、間違いは直接直せます。
                       </p>
                     )}
-                    <div className="flex flex-col gap-1.5 mb-2.5">
-                      {cueRows.map((row, idx) => {
-                        const parsedRow = parseFlexibleDuration(row.timeText);
-                        const rowInvalid = row.timeText.trim() !== "" && !parsedRow;
-                        return (
-                          <div key={idx} className="flex gap-1.5 items-center">
-                            <input
-                              type="text"
-                              name={`cue-label-${idx}`}
-                              readOnly
-                              onPointerDown={(e) => e.target.removeAttribute("readonly")}
-                              autoComplete="off"
-                              autoCorrect="off"
-                              autoCapitalize="none"
-                              spellCheck={false}
-                              data-form-type="other"
-                              data-lpignore="true"
-                              value={row.label}
-                              onChange={(e) => updateCueRow(idx, { label: e.target.value })}
-                              placeholder="コーナー名"
-                              className="flex-1 min-w-0 bg-bg border border-border rounded-lg px-2 py-1.5 text-whiteCustom text-[12px] font-sans outline-none"
-                            />
-                            <input
-                              type="text"
-                              name={`cue-time-${idx}`}
-                              autoComplete="off"
-                              autoCorrect="off"
-                              autoCapitalize="none"
-                              spellCheck={false}
-                              data-form-type="other"
-                              data-lpignore="true"
-                              value={row.timeText}
-                              onChange={(e) => updateCueRow(idx, { timeText: e.target.value })}
-                              placeholder="3:30"
-                              className={`w-[76px] shrink-0 bg-bg border rounded-lg px-1.5 py-1.5 text-[12px] font-mono text-center outline-none ${rowInvalid ? "border-redCustom text-redCustom" : "border-border text-blueCustom"}`}
-                            />
-                            <span className="w-[40px] shrink-0 text-[9px] font-mono text-mutedCustom text-right">
-                              {parsedRow ? formatTime(parsedRow) : "―"}
-                            </span>
-                            <button
-                              onClick={() => removeCueRow(idx)}
-                              className="shrink-0 w-6 h-6 bg-surface border border-border rounded-md text-mutedCustom text-[11px] cursor-pointer"
-                            >
-                              ✕
-                            </button>
+                    {cueGroups.map((group) => {
+                      const groupRows = cueRows
+                        .map((row, idx) => ({ row, idx }))
+                        .filter(({ row }) => (row.kind === "cd" ? "cd" : "tm") === group.kind);
+                      if (groupRows.length === 0) return null;
+                      return (
+                        <div key={group.kind} className="mb-2.5">
+                          <div style={{ ...labelStyle, fontSize: 9, marginBottom: 4 }}>{group.title}</div>
+                          <div className="flex flex-col gap-1.5">
+                            {groupRows.map(({ row, idx }) => {
+                              const isCd = group.kind === "cd";
+                              const parsedRow = parsedCueRows[idx];
+                              const rowInvalid = row.timeText.trim() !== "" && !(parsedRow && parsedRow.valid);
+                              return (
+                                <div key={idx} className="flex gap-1.5 items-center">
+                                  <input
+                                    type="text"
+                                    name={`cue-label-${idx}`}
+                                    readOnly
+                                    onPointerDown={(e) => e.target.removeAttribute("readonly")}
+                                    autoComplete="off"
+                                    autoCorrect="off"
+                                    autoCapitalize="none"
+                                    spellCheck={false}
+                                    data-form-type="other"
+                                    data-lpignore="true"
+                                    value={row.label}
+                                    onChange={(e) => updateCueRow(idx, { label: e.target.value })}
+                                    placeholder="コーナー名"
+                                    className="flex-1 min-w-0 bg-bg border border-border rounded-lg px-2 py-1.5 text-whiteCustom text-[12px] font-sans outline-none"
+                                  />
+                                  <input
+                                    type="text"
+                                    name={`cue-time-${idx}`}
+                                    autoComplete="off"
+                                    autoCorrect="off"
+                                    autoCapitalize="none"
+                                    spellCheck={false}
+                                    data-form-type="other"
+                                    data-lpignore="true"
+                                    value={row.timeText}
+                                    onChange={(e) => updateCueRow(idx, { timeText: e.target.value })}
+                                    placeholder={isCd ? "18:30" : "3:30"}
+                                    className={`w-[76px] shrink-0 bg-bg border rounded-lg px-1.5 py-1.5 text-[12px] font-mono text-center outline-none ${rowInvalid ? "border-redCustom text-redCustom" : "border-border text-blueCustom"}`}
+                                  />
+                                  <span className="w-[40px] shrink-0 text-[9px] font-mono text-mutedCustom text-right">
+                                    {parsedRow && parsedRow.valid ? (isCd ? formatClockText(parsedRow.clock) : formatTime(parsedRow.ms)) : "―"}
+                                  </span>
+                                  <button
+                                    onClick={() => toggleCueKind(idx)}
+                                    className={`shrink-0 w-[34px] h-6 bg-surface border rounded-md text-[10px] font-mono font-bold cursor-pointer ${isCd ? "border-amberCustom text-amberCustom" : "border-blueCustom text-blueCustom"}`}
+                                  >
+                                    {isCd ? "CD" : "TM"}
+                                  </button>
+                                  <button
+                                    onClick={() => removeCueRow(idx)}
+                                    className="shrink-0 w-6 h-6 bg-surface border border-border rounded-md text-mutedCustom text-[11px] cursor-pointer"
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              );
+                            })}
                           </div>
-                        );
-                      })}
-                    </div>
+                        </div>
+                      );
+                    })}
                     <button
                       onClick={addCueRow}
                       className="w-full py-1.5 mb-3 border border-dashed border-mutedCustom rounded-lg text-mutedCustom text-[10px] font-sans cursor-pointer"
@@ -2945,11 +3135,11 @@
                     </button>
                     <div className="flex gap-2">
                       <button
-                        onClick={createTimersFromCue}
-                        disabled={validCueRows.length === 0}
+                        onClick={createFromCueSheet}
+                        disabled={validTmCueRows.length + validCdCueRows.length === 0}
                         className="flex-1 py-2.5 bg-blueCustom rounded-[10px] text-bg text-[11px] tracking-[1px] font-sans font-bold cursor-pointer border-none disabled:opacity-40"
                       >
-                        ✓ この内容でタイマーを作る（{validCueRows.length}件）
+                        ✓ この内容で作る（TM {validTmCueRows.length}件・CD {validCdCueRows.length}件）
                       </button>
                       <button
                         onClick={() => setCuePhase("pick")}
@@ -4378,6 +4568,7 @@
             <TimerManager
               timers={timers}
               setTimers={setTimers}
+              setCountdownTargets={setCountdownTargets}
               clipboardVal={clipboardValue}
               stealSec={tmSteal}
               setStealSec={setTmSteal} 
