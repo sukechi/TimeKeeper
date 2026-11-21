@@ -1588,10 +1588,7 @@
       return (
         <div className="h-full flex flex-col p-[8px_10px] gap-1 overflow-hidden">
           <div className="bg-card rounded-xl p-[8px_10px] border border-border shrink-0 no-drag">
-            {/* 1. 2秒盗みボタン */}
-            <div className="mb-1.5">
-              <QuickOffsetButton value={stealSec} onChange={setStealSec} />
-            </div>
+            {/* 2秒盗みボタンは最下部の帯（右下）へ移動した（v12） */}
 
             {/* 2. タイムショートカット */}
             <div style={{ ...labelStyle, fontSize: 8, marginBottom: 4 }}>
@@ -2631,10 +2628,7 @@
       return (
         <div className="h-full flex flex-col p-[8px_10px] gap-1 overflow-hidden">
           <div className="bg-card rounded-xl p-[8px_10px] border border-border shrink-0 no-drag">
-            {/* 1. 2秒盗みボタン */}
-            <div className="mb-1.5">
-              <QuickOffsetButton value={stealSec} onChange={setStealSec} />
-            </div>
+            {/* 2秒盗みボタンは最下部の帯（右下）へ移動した（v12） */}
 
             {/* 2. タイムショートカット */}
             <div style={{ ...labelStyle, fontSize: 8, marginBottom: 4 }}>
@@ -3686,19 +3680,8 @@
     function FloatingOutput({ sourceKey, cdTargets, timers, swState, cdSteal, tmSteal, onClose, onShowBlockAlert, timeOffset = 0, anchorRef }) {
       const defaultFloatSize = { w: 180, h: 74 };
 
-      const [position, setPosition] = useState(() => {
-        try {
-          const rect = anchorRef && anchorRef.current ? anchorRef.current.getBoundingClientRect() : null;
-          if (rect) {
-            return {
-              x: Math.max(4, rect.right - defaultFloatSize.w - 6),
-              y: rect.bottom - 12
-            };
-          }
-        } catch (_) {}
-        const winW = typeof window !== 'undefined' ? window.innerWidth : 390;
-        return { x: Math.max(8, winW - defaultFloatSize.w - 10), y: 52 };
-      });
+      // 初期表示位置は画面左上（ユーザーの指定：添付画像の位置）。開いた後はドラッグで移動できる。
+      const [position, setPosition] = useState({ x: 8, y: 52 });
 
       const [size, setSize] = useState(defaultFloatSize); 
       const [showCloseBtn, setShowCloseBtn] = useState(false);
@@ -4646,7 +4629,7 @@
                 onDoubleTap={() => setIsLandscape(true)}
                 blockUntilRef={blockClockUntilRef}
               />
-              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v11</div>
+              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v12</div>
             </div>
           </div>
 
@@ -4697,32 +4680,48 @@
             />
           </div>
 
-          {/* 最下部の専用スワイプ帯: ここを左右にスワイプするとタブ切り替え。点は現在位置の目印で、押しても移動できる */}
+          {/* 最下部の専用スワイプ帯: ここを左右にスワイプするとタブ切り替え。略称ラベル（CD/TM/SW/CALC）を押しても移動できる。
+              右下には「−秒」オフセットボタン（今開いているタブ用。CD/TM以外ではCD用）を常時表示する（v12） */}
           <div
             data-tab-swipe-zone="1"
-            className="tk-strip shrink-0 flex items-center justify-center border-t border-border bg-bg"
+            className="tk-strip shrink-0 flex items-center border-t border-border bg-bg"
             style={{
               height: "calc(40px + env(safe-area-inset-bottom, 0px))",
               paddingBottom: "env(safe-area-inset-bottom, 0px)",
               boxSizing: "border-box"
             }}
           >
-            <div ref={tabStripInnerRef} className="flex items-center gap-[7px]">
-            {tabItems.map(tab => {
-              const isActive = currentTab === tab.id;
-              return (
-                <div
-                  key={tab.id}
-                  onClick={() => switchTab(tab.id)}
-                  className="rounded-full transition-all duration-300 cursor-pointer"
-                  style={{
-                    width: isActive ? 20 : 7,
-                    height: 7,
-                    background: isActive ? colors.amber : colors.border
-                  }}
-                />
-              );
-            })}
+            <div className="flex-1 flex items-center justify-center">
+              <div ref={tabStripInnerRef} className="flex items-center gap-[6px]">
+              {tabItems.map(tab => {
+                const isActive = currentTab === tab.id;
+                return (
+                  <div
+                    key={tab.id}
+                    onClick={() => switchTab(tab.id)}
+                    className="rounded-full transition-all duration-300 cursor-pointer flex items-center justify-center"
+                    style={{
+                      padding: "3px 9px",
+                      fontSize: 10,
+                      lineHeight: 1.2,
+                      letterSpacing: "0.5px",
+                      fontWeight: isActive ? 700 : 400,
+                      background: isActive ? colors.amberGlow : "transparent",
+                      border: `1px solid ${isActive ? colors.amber : colors.border}`,
+                      color: isActive ? colors.amber : colors.muted
+                    }}
+                  >
+                    {tab.label}
+                  </div>
+                );
+              })}
+              </div>
+            </div>
+            <div className="shrink-0 pr-2 flex items-center">
+              <QuickOffsetButton
+                value={currentTab === "tm" ? tmSteal : cdSteal}
+                onChange={currentTab === "tm" ? setTmSteal : setCdSteal}
+              />
             </div>
           </div>
 
