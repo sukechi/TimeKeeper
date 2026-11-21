@@ -4476,9 +4476,8 @@
       // 二本指スワイプでタブを循環切り替え(左スワイプ→右隣のタブへ、右スワイプ→左隣のタブへ)
       const twoFingerSwipeRef = useRef({ active: false, startX: 0, startY: 0, curX: 0, curY: 0 });
 
-      // 一本指スワイプ（画面の背景部分）でもタブを循環切り替えする。
-      // カード上のスワイプはカード側の操作（編集/削除・情報表示）に使うため、カード内から
-      // 始まったスワイプは対象外にする（data-swipe-card で判定）。入力欄からも始めない。
+      // 一本指スワイプでタブを循環切り替える。対象は画面最下部の専用帯だけに限定する
+      // （カードやラベルの操作と一切重ならない場所なので、競合しない）。
       const bgSwipeRef = useRef({ active: false, startX: 0, startY: 0, curX: 0, curY: 0 });
 
       const getTouchMidpoint = (touches) => ({
@@ -4494,10 +4493,12 @@
         } else {
           twoFingerSwipeRef.current.active = false;
           if (e.touches.length === 1) {
+            // 一本指スワイプの対象は、画面最下部の専用帯（data-tab-swipe-zone）だけ。
+            // カードやラベルと一切重ならない場所に限定し、競合をなくす
             const t = e.target;
-            const blocked = t && t.closest && (t.closest('[data-swipe-card]') || t.closest('input, textarea, select, [contenteditable="true"]'));
+            const inZone = t && t.closest && t.closest('[data-tab-swipe-zone]');
             const touch = e.touches[0];
-            bgSwipeRef.current = { active: !blocked, startX: touch.clientX, startY: touch.clientY, curX: touch.clientX, curY: touch.clientY };
+            bgSwipeRef.current = { active: !!inZone, startX: touch.clientX, startY: touch.clientY, curX: touch.clientX, curY: touch.clientY };
           } else {
             bgSwipeRef.current.active = false;
           }
@@ -4593,7 +4594,7 @@
                 onDoubleTap={() => setIsLandscape(true)}
                 blockUntilRef={blockClockUntilRef}
               />
-              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v7</div>
+              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v8</div>
             </div>
           </div>
 
@@ -4638,10 +4639,32 @@
           </div>
 
           <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "calc" ? "flex" : "none", animation: currentTab === "calc" ? (tabAnimDir >= 0 ? "tabInFromRight .45s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .45s cubic-bezier(.22,1,.36,1) both") : "none" }}>
-            <CalculatorManager 
-              setClipboardVal={setClipboardValue} 
+            <CalculatorManager
+              setClipboardVal={setClipboardValue}
               isActive={currentTab === "calc"}
             />
+          </div>
+
+          {/* 最下部の専用スワイプ帯: ここを左右にスワイプするとタブ切り替え。点は現在位置の目印で、押しても移動できる */}
+          <div
+            data-tab-swipe-zone="1"
+            className="shrink-0 flex items-center justify-center gap-[7px] h-[34px] border-t border-border bg-bg"
+          >
+            {tabItems.map(tab => {
+              const isActive = currentTab === tab.id;
+              return (
+                <div
+                  key={tab.id}
+                  onClick={() => switchTab(tab.id)}
+                  className="rounded-full transition-all duration-300 cursor-pointer"
+                  style={{
+                    width: isActive ? 20 : 7,
+                    height: 7,
+                    background: isActive ? colors.amber : colors.border
+                  }}
+                />
+              );
+            })}
           </div>
 
           {activeOutputKey && (

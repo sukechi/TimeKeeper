@@ -1,7 +1,7 @@
 // TimeKeeper Service Worker
 // 目的: アプリ本体とCDN資産をキャッシュし、オフラインでも真っ白にならないようにする。
 // 注意: index.html や資産の内容を更新したら CACHE_VERSION を上げること（古いキャッシュが破棄される）。
-const CACHE_VERSION = "tk-v7";
+const CACHE_VERSION = "tk-v8";
 
 const PRECACHE_URLS = [
   "./",
