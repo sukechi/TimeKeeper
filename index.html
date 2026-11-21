@@ -101,6 +101,16 @@
     .no-scrollbar::-webkit-scrollbar {
       display: none;
     }
+
+    /* タブ切り替え時の画面アニメーション（右隣のタブへ=右から、左隣のタブへ=左から） */
+    @keyframes tabInFromRight {
+      from { opacity: 0; transform: translateX(16px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes tabInFromLeft {
+      from { opacity: 0; transform: translateX(-16px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
     .no-scrollbar {
       -ms-overflow-style: none;
       scrollbar-width: none;
@@ -4389,6 +4399,14 @@
     function App() {
       const savedState = readSavedAppState();
       const [currentTab, setCurrentTab] = useState("cd");
+      // タブ切り替えアニメーションの向き（1=右隣へ、-1=左隣へ）。切り替えはタップと
+      // 既存の二本指スワイプからのみ行い、新しいジェスチャは追加しない（カードのスワイプと混線させない）
+      const [tabAnimDir, setTabAnimDir] = useState(1);
+      const switchTab = (id) => {
+        const order = ["cd", "tm", "sw", "calc"];
+        setTabAnimDir(order.indexOf(id) >= order.indexOf(currentTab) ? 1 : -1);
+        setCurrentTab(id);
+      };
       const [timeOffset, setTimeOffset] = useState(() => typeof savedState.timeOffset === "number" ? savedState.timeOffset : 0);
       const [clipboardValue, setClipboardValue] = useState("");
 
@@ -4491,7 +4509,7 @@
             const nextIdx = dx < 0
               ? (idx + 1) % tabOrder.length
               : (idx - 1 + tabOrder.length) % tabOrder.length;
-            setCurrentTab(tabOrder[nextIdx]);
+            switchTab(tabOrder[nextIdx]);
           }
         }
         state.active = false;
@@ -4506,17 +4524,25 @@
           onTouchCancel={handleTabSwipeEnd}
         >
           <div className="flex justify-between items-center px-2 py-1.5 border-b border-border bg-bg shrink-0 z-50">
-            <div className="flex gap-[3px]">
+            <div className="relative flex gap-[3px]">
+              {/* 選択中タブの下を滑るピル印 */}
+              <div
+                className="absolute top-0 left-0 h-[48px] w-[46px] rounded-[8px] pointer-events-none"
+                style={{
+                  background: colors.amberGlow,
+                  border: `1px solid ${colors.amber}`,
+                  transform: `translateX(${tabOrder.indexOf(currentTab) * 49}px)`,
+                  transition: "transform 0.3s cubic-bezier(.22,1,.36,1)"
+                }}
+              />
               {tabItems.map(tab => {
                 const isActive = currentTab === tab.id;
                 return (
                   <button
                     key={tab.id}
-                    onClick={() => setCurrentTab(tab.id)}
-                    className="flex flex-col items-center justify-center gap-[1px] min-w-[42px] h-[48px] px-[3px] bg-transparent border rounded-[8px] text-[10px] tracking-[0.3px] font-sans transition-all duration-150 active:scale-95"
+                    onClick={() => switchTab(tab.id)}
+                    className="relative z-10 flex flex-col items-center justify-center gap-[1px] w-[46px] h-[48px] px-[3px] bg-transparent border border-transparent rounded-[8px] text-[10px] tracking-[0.3px] font-sans transition-colors duration-200 active:scale-95"
                     style={{
-                      background: isActive ? colors.amberGlow : 'none',
-                      borderColor: isActive ? colors.amber : colors.border,
                       color: isActive ? colors.amber : colors.muted,
                       fontWeight: isActive ? 700 : 400
                     }}
@@ -4538,7 +4564,7 @@
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "cd" ? "flex" : "none" }}>
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "cd" ? "flex" : "none", animation: currentTab === "cd" ? (tabAnimDir >= 0 ? "tabInFromRight .28s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .28s cubic-bezier(.22,1,.36,1) both") : "none" }}>
             <CountdownManager
               targets={countdownTargets}
               setTargets={setCountdownTargets}
@@ -4554,7 +4580,7 @@
             />
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "tm" ? "flex" : "none" }}>
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "tm" ? "flex" : "none", animation: currentTab === "tm" ? (tabAnimDir >= 0 ? "tabInFromRight .28s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .28s cubic-bezier(.22,1,.36,1) both") : "none" }}>
             <TimerManager
               timers={timers}
               setTimers={setTimers}
@@ -4569,7 +4595,7 @@
             />
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "sw" ? "flex" : "none" }}>
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "sw" ? "flex" : "none", animation: currentTab === "sw" ? (tabAnimDir >= 0 ? "tabInFromRight .28s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .28s cubic-bezier(.22,1,.36,1) both") : "none" }}>
             <StopwatchManager
               swState={stopwatchState}
               setSwState={setStopwatchState}
@@ -4578,7 +4604,7 @@
             />
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "calc" ? "flex" : "none" }}>
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "calc" ? "flex" : "none", animation: currentTab === "calc" ? (tabAnimDir >= 0 ? "tabInFromRight .28s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .28s cubic-bezier(.22,1,.36,1) both") : "none" }}>
             <CalculatorManager 
               setClipboardVal={setClipboardValue} 
               isActive={currentTab === "calc"}
