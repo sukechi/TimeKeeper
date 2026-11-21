@@ -104,11 +104,11 @@
 
     /* タブ切り替え時の画面アニメーション（右隣のタブへ=右から、左隣のタブへ=左から） */
     @keyframes tabInFromRight {
-      from { opacity: 0; transform: translateX(16px); }
+      from { opacity: 0; transform: translateX(28px); }
       to { opacity: 1; transform: translateX(0); }
     }
     @keyframes tabInFromLeft {
-      from { opacity: 0; transform: translateX(-16px); }
+      from { opacity: 0; transform: translateX(-28px); }
       to { opacity: 1; transform: translateX(0); }
     }
     .no-scrollbar {
@@ -4532,7 +4532,7 @@
                   background: colors.amberGlow,
                   border: `1px solid ${colors.amber}`,
                   transform: `translateX(${tabOrder.indexOf(currentTab) * 49}px)`,
-                  transition: "transform 0.3s cubic-bezier(.22,1,.36,1)"
+                  transition: "transform 0.45s cubic-bezier(.22,1,.36,1)"
                 }}
               />
               {tabItems.map(tab => {
@@ -4554,17 +4554,18 @@
               })}
             </div>
             
-            <div ref={headerClockRef} className="shrink-0">
-              <HeaderClock 
-                offsetMs={timeOffset} 
-                setOffsetMs={setTimeOffset} 
+            <div ref={headerClockRef} className="shrink-0 flex flex-col items-end">
+              <HeaderClock
+                offsetMs={timeOffset}
+                setOffsetMs={setTimeOffset}
                 onDoubleTap={() => setIsLandscape(true)}
                 blockUntilRef={blockClockUntilRef}
               />
+              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v6</div>
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "cd" ? "flex" : "none", animation: currentTab === "cd" ? (tabAnimDir >= 0 ? "tabInFromRight .28s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .28s cubic-bezier(.22,1,.36,1) both") : "none" }}>
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "cd" ? "flex" : "none", animation: currentTab === "cd" ? (tabAnimDir >= 0 ? "tabInFromRight .45s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .45s cubic-bezier(.22,1,.36,1) both") : "none" }}>
             <CountdownManager
               targets={countdownTargets}
               setTargets={setCountdownTargets}
@@ -4580,7 +4581,7 @@
             />
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "tm" ? "flex" : "none", animation: currentTab === "tm" ? (tabAnimDir >= 0 ? "tabInFromRight .28s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .28s cubic-bezier(.22,1,.36,1) both") : "none" }}>
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "tm" ? "flex" : "none", animation: currentTab === "tm" ? (tabAnimDir >= 0 ? "tabInFromRight .45s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .45s cubic-bezier(.22,1,.36,1) both") : "none" }}>
             <TimerManager
               timers={timers}
               setTimers={setTimers}
@@ -4595,7 +4596,7 @@
             />
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "sw" ? "flex" : "none", animation: currentTab === "sw" ? (tabAnimDir >= 0 ? "tabInFromRight .28s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .28s cubic-bezier(.22,1,.36,1) both") : "none" }}>
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "sw" ? "flex" : "none", animation: currentTab === "sw" ? (tabAnimDir >= 0 ? "tabInFromRight .45s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .45s cubic-bezier(.22,1,.36,1) both") : "none" }}>
             <StopwatchManager
               swState={stopwatchState}
               setSwState={setStopwatchState}
@@ -4604,7 +4605,7 @@
             />
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "calc" ? "flex" : "none", animation: currentTab === "calc" ? (tabAnimDir >= 0 ? "tabInFromRight .28s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .28s cubic-bezier(.22,1,.36,1) both") : "none" }}>
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ display: currentTab === "calc" ? "flex" : "none", animation: currentTab === "calc" ? (tabAnimDir >= 0 ? "tabInFromRight .45s cubic-bezier(.22,1,.36,1) both" : "tabInFromLeft .45s cubic-bezier(.22,1,.36,1) both") : "none" }}>
             <CalculatorManager 
               setClipboardVal={setClipboardValue} 
               isActive={currentTab === "calc"}
