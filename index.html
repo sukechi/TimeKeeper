@@ -80,11 +80,17 @@
       position: absolute;
       inset: 0;
       height: 100%;
-      padding-top: env(safe-area-inset-top, 0px);
-      padding-bottom: env(safe-area-inset-bottom, 0px);
+      /* 上下のセーフエリアは、ヘッダーと最下部の帯がそれぞれ背景ごと取り込む（v10）。
+         ここで padding を付けると、その分だけ表示範囲が狭くなる */
       padding-left: env(safe-area-inset-left, 0px);
       padding-right: env(safe-area-inset-right, 0px);
       box-sizing: border-box;
+    }
+    /* 背の低い画面（iPhone SEなど）では上下の固定部分を少し詰めて、表示範囲を確保する */
+    @media (max-height: 700px) {
+      .tk-tab-btn { height: 42px !important; }
+      .tk-tab-pill { height: 42px !important; }
+      .tk-strip { height: calc(34px + env(safe-area-inset-bottom, 0px)) !important; }
     }
     ::-webkit-scrollbar {
       width: 4px;
@@ -4575,11 +4581,14 @@
           onTouchEnd={handleTabSwipeEnd}
           onTouchCancel={handleTabSwipeEnd}
         >
-          <div className="flex justify-between items-center px-2 py-1.5 border-b border-border bg-bg shrink-0 z-50">
+          <div
+            className="flex justify-between items-center px-2 py-1.5 border-b border-border bg-bg shrink-0 z-50"
+            style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 6px)" }}
+          >
             <div className="relative flex gap-[3px]">
               {/* 選択中タブの下を滑るピル印 */}
               <div
-                className="absolute top-0 left-0 h-[48px] w-[46px] rounded-[8px] pointer-events-none"
+                className="tk-tab-pill absolute top-0 left-0 h-[48px] w-[46px] rounded-[8px] pointer-events-none"
                 style={{
                   background: colors.amberGlow,
                   border: `1px solid ${colors.amber}`,
@@ -4593,7 +4602,7 @@
                   <button
                     key={tab.id}
                     onClick={() => switchTab(tab.id)}
-                    className="relative z-10 flex flex-col items-center justify-center gap-[1px] w-[46px] h-[48px] px-[3px] bg-transparent border border-transparent rounded-[8px] text-[10px] tracking-[0.3px] font-sans transition-colors duration-200 active:scale-95"
+                    className="tk-tab-btn relative z-10 flex flex-col items-center justify-center gap-[1px] w-[46px] h-[48px] px-[3px] bg-transparent border border-transparent rounded-[8px] text-[10px] tracking-[0.3px] font-sans transition-colors duration-200 active:scale-95"
                     style={{
                       color: isActive ? colors.amber : colors.muted,
                       fontWeight: isActive ? 700 : 400
@@ -4613,7 +4622,7 @@
                 onDoubleTap={() => setIsLandscape(true)}
                 blockUntilRef={blockClockUntilRef}
               />
-              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v9</div>
+              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v10</div>
             </div>
           </div>
 
@@ -4667,7 +4676,12 @@
           {/* 最下部の専用スワイプ帯: ここを左右にスワイプするとタブ切り替え。点は現在位置の目印で、押しても移動できる */}
           <div
             data-tab-swipe-zone="1"
-            className="shrink-0 flex items-center justify-center h-[40px] border-t border-border bg-bg"
+            className="tk-strip shrink-0 flex items-center justify-center border-t border-border bg-bg"
+            style={{
+              height: "calc(40px + env(safe-area-inset-bottom, 0px))",
+              paddingBottom: "env(safe-area-inset-bottom, 0px)",
+              boxSizing: "border-box"
+            }}
           >
             <div ref={tabStripInnerRef} className="flex items-center gap-[7px]">
             {tabItems.map(tab => {
