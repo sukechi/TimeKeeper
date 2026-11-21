@@ -4478,7 +4478,21 @@
 
       // 一本指スワイプでタブを循環切り替える。対象は画面最下部の専用帯だけに限定する
       // （カードやラベルの操作と一切重ならない場所なので、競合しない）。
-      const bgSwipeRef = useRef({ active: false, startX: 0, startY: 0, curX: 0, curY: 0 });
+      // 反応を良くするため、指を離すのを待たず、しきい値を超えた瞬間に切り替える。
+      const bgSwipeRef = useRef({ active: false, fired: false, startX: 0, startY: 0, curX: 0, curY: 0 });
+      const tabStripInnerRef = useRef(null);
+
+      const tryBgSwipe = (dx, dy) => {
+        if (Math.abs(dx) >= 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+          const idx = tabOrder.indexOf(currentTab);
+          const nextIdx = dx < 0
+            ? (idx + 1) % tabOrder.length
+            : (idx - 1 + tabOrder.length) % tabOrder.length;
+          switchTab(tabOrder[nextIdx]);
+          return true;
+        }
+        return false;
+      };
 
       const getTouchMidpoint = (touches) => ({
         x: (touches[0].clientX + touches[1].clientX) / 2,
@@ -4498,7 +4512,8 @@
             const t = e.target;
             const inZone = t && t.closest && t.closest('[data-tab-swipe-zone]');
             const touch = e.touches[0];
-            bgSwipeRef.current = { active: !!inZone, startX: touch.clientX, startY: touch.clientY, curX: touch.clientX, curY: touch.clientY };
+            bgSwipeRef.current = { active: !!inZone, fired: false, startX: touch.clientX, startY: touch.clientY, curX: touch.clientX, curY: touch.clientY };
+            if (inZone && tabStripInnerRef.current) tabStripInnerRef.current.style.transform = "";
           } else {
             bgSwipeRef.current.active = false;
           }
@@ -4513,6 +4528,16 @@
         } else if (bgSwipeRef.current.active && e.touches.length === 1) {
           bgSwipeRef.current.curX = e.touches[0].clientX;
           bgSwipeRef.current.curY = e.touches[0].clientY;
+          const dx = bgSwipeRef.current.curX - bgSwipeRef.current.startX;
+          const dy = bgSwipeRef.current.curY - bgSwipeRef.current.startY;
+          // 指の動きに点を少し追随させて、効いていることを見せる
+          if (tabStripInnerRef.current) {
+            const follow = Math.max(-14, Math.min(14, dx * 0.35));
+            tabStripInnerRef.current.style.transform = `translateX(${follow}px)`;
+          }
+          if (!bgSwipeRef.current.fired && tryBgSwipe(dx, dy)) {
+            bgSwipeRef.current.fired = true;
+          }
         }
       };
 
@@ -4533,19 +4558,13 @@
         state.active = false;
 
         const bg = bgSwipeRef.current;
-        if (bg.active) {
-          const dx = bg.curX - bg.startX;
-          const dy = bg.curY - bg.startY;
-          // 背景スワイプは誤反応を避けるため、はっきりした横移動のときだけ切り替える
-          if (Math.abs(dx) >= 90 && Math.abs(dx) > Math.abs(dy) * 2) {
-            const idx = tabOrder.indexOf(currentTab);
-            const nextIdx = dx < 0
-              ? (idx + 1) % tabOrder.length
-              : (idx - 1 + tabOrder.length) % tabOrder.length;
-            switchTab(tabOrder[nextIdx]);
-          }
+        if (bg.active && !bg.fired) {
+          // 移動中に発火しなかった場合の保険（ゆっくりしたスワイプ等）
+          tryBgSwipe(bg.curX - bg.startX, bg.curY - bg.startY);
         }
         bg.active = false;
+        bg.fired = false;
+        if (tabStripInnerRef.current) tabStripInnerRef.current.style.transform = "";
       };
 
       return (
@@ -4594,7 +4613,7 @@
                 onDoubleTap={() => setIsLandscape(true)}
                 blockUntilRef={blockClockUntilRef}
               />
-              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v8</div>
+              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v9</div>
             </div>
           </div>
 
@@ -4648,8 +4667,9 @@
           {/* 最下部の専用スワイプ帯: ここを左右にスワイプするとタブ切り替え。点は現在位置の目印で、押しても移動できる */}
           <div
             data-tab-swipe-zone="1"
-            className="shrink-0 flex items-center justify-center gap-[7px] h-[34px] border-t border-border bg-bg"
+            className="shrink-0 flex items-center justify-center h-[40px] border-t border-border bg-bg"
           >
+            <div ref={tabStripInnerRef} className="flex items-center gap-[7px]">
             {tabItems.map(tab => {
               const isActive = currentTab === tab.id;
               return (
@@ -4665,6 +4685,7 @@
                 />
               );
             })}
+            </div>
           </div>
 
           {activeOutputKey && (
