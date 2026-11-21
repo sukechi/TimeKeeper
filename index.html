@@ -90,7 +90,7 @@
     @media (max-height: 700px) {
       .tk-tab-btn { height: 42px !important; }
       .tk-tab-pill { height: 42px !important; }
-      .tk-strip { height: calc(34px + env(safe-area-inset-bottom, 0px)) !important; }
+      .tk-strip { height: calc(24px + env(safe-area-inset-bottom, 0px)) !important; }
     }
     ::-webkit-scrollbar {
       width: 4px;
@@ -4622,7 +4622,7 @@
                 onDoubleTap={() => setIsLandscape(true)}
                 blockUntilRef={blockClockUntilRef}
               />
-              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v10</div>
+              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v11</div>
             </div>
           </div>
 
@@ -4678,7 +4678,7 @@
             data-tab-swipe-zone="1"
             className="tk-strip shrink-0 flex items-center justify-center border-t border-border bg-bg"
             style={{
-              height: "calc(40px + env(safe-area-inset-bottom, 0px))",
+              height: "calc(28px + env(safe-area-inset-bottom, 0px))",
               paddingBottom: "env(safe-area-inset-bottom, 0px)",
               boxSizing: "border-box"
             }}
