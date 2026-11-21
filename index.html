@@ -2146,7 +2146,7 @@
                       fontSize: 'clamp(30px, 9vw, 42px)'
                     }}
                   >
-                    {timer.done ? "完了" : formatTime(displayMs)}
+                    {timer.done ? "完了" : isOver ? "+" + formatTime(Math.abs(displayMs)) : formatTime(displayMs)}
                   </div>
 
                   {diffData && (
@@ -2388,20 +2388,10 @@
         if (clipboardVal) setCustomInput(clipboardVal);
       }, [clipboardVal]);
 
-      // ゼロに到達した稼働中タイマーを「完了」状態へ遷移させる
-      // （表示側には done 前提の「✓完了」表示が用意されていたが、セットする処理が無かった）
-      // TimerManager は稼働中 200ms 間隔で再描画されるため、そのタイミングで判定する
-      useEffect(() => {
-        const virtualNow = Date.now() + timeOffset;
-        const hasFinished = timers.some(t => t.running && !t.done && t.endAt != null && t.endAt - virtualNow <= 0);
-        if (!hasFinished) return;
-        setTimers(prev => prev.map(t => {
-          if (t.running && !t.done && t.endAt != null && t.endAt - (Date.now() + timeOffset) <= 0) {
-            return { ...t, running: false, remaining: 0, done: true };
-          }
-          return t;
-        }));
-      });
+      // 仕様（2026-11-21変更）: タイマーはゼロで「完了」にならず、止めるまで
+      // +表示でカウントアップし続ける（どれだけ押したか判断できるようにするため）。
+      // そのため、ゼロ到達で done へ自動遷移させる処理は置かない。
+      // done は過去バージョンの保存状態との互換のためだけに残す。
 
       const parsedCustom = parseInputDigits(customInput);
       const targetMs = parsedCustom ? parsedCustom.ms : selectedPresetMs;
@@ -3740,7 +3730,7 @@
           const isNear = baseRemaining < 10000 && baseRemaining > 0 && timer.running;
 
           return {
-            display: timer.done ? "完了" : isOver ? formatTime(displayMs) : formatTime(displayMs),
+            display: timer.done ? "完了" : isOver ? "+" + formatTime(Math.abs(displayMs)) : formatTime(displayMs),
             color: timer.done ? colors.green : isOver ? colors.red : timer.running ? (isNear ? colors.amber : colors.blue) : colors.mutedLight,
             label: displayLabel,
             progress: progress,
@@ -4289,7 +4279,7 @@
           const elapsedTime = Math.max(0, timer.totalMs - baseRemaining);
 
           return {
-            display: timer.done ? "完了" : isOver ? formatTime(displayMs) : formatTime(displayMs),
+            display: timer.done ? "完了" : isOver ? "+" + formatTime(Math.abs(displayMs)) : formatTime(displayMs),
             color: timer.done ? colors.green : isOver ? colors.red : timer.running ? (isNear ? colors.amber : colors.blue) : colors.mutedLight,
             label: timer.label || "タイマー",
             subLabel: `設定: ${formatTime(timer.totalMs)} / 経過: ${formatTime(elapsedTime)}`
