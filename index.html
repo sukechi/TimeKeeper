@@ -1201,7 +1201,7 @@
       const isRightSwiped = translateX > 20;
 
       return (
-        <div data-id={item.id} className="relative overflow-hidden rounded-xl mb-1.5 select-none cd-card-h" style={{ height: '78px' }}>
+        <div data-id={item.id} data-swipe-card="1" className="relative overflow-hidden rounded-xl mb-1.5 select-none cd-card-h" style={{ height: '78px' }}>
           {/* 右スワイプ裏レイヤー: TM稼働計算結果 */}
           <div 
             className="absolute inset-y-0 left-0 flex flex-col justify-center bg-gradient-to-r from-[#031525] to-[#09223a] border-r-2 border-cyanCustom no-drag rounded-l-xl transition-opacity duration-150 px-2.5 z-0"
@@ -2043,7 +2043,7 @@
         : formattedTotal;
 
       return (
-        <div data-id={timer.id} className="relative overflow-hidden rounded-xl mb-[6px] select-none tm-card-h" style={{ height: '80px' }}>
+        <div data-id={timer.id} data-swipe-card="1" className="relative overflow-hidden rounded-xl mb-[6px] select-none tm-card-h" style={{ height: '80px' }}>
           {/* 右スワイプ裏レイヤー: 経過時間 */}
           <div 
             className="absolute inset-y-0 left-0 flex items-center justify-center bg-blueGlow border-r border-blueCustom/20 no-drag rounded-l-xl transition-opacity duration-150"
@@ -4476,6 +4476,11 @@
       // 二本指スワイプでタブを循環切り替え(左スワイプ→右隣のタブへ、右スワイプ→左隣のタブへ)
       const twoFingerSwipeRef = useRef({ active: false, startX: 0, startY: 0, curX: 0, curY: 0 });
 
+      // 一本指スワイプ（画面の背景部分）でもタブを循環切り替えする。
+      // カード上のスワイプはカード側の操作（編集/削除・情報表示）に使うため、カード内から
+      // 始まったスワイプは対象外にする（data-swipe-card で判定）。入力欄からも始めない。
+      const bgSwipeRef = useRef({ active: false, startX: 0, startY: 0, curX: 0, curY: 0 });
+
       const getTouchMidpoint = (touches) => ({
         x: (touches[0].clientX + touches[1].clientX) / 2,
         y: (touches[0].clientY + touches[1].clientY) / 2
@@ -4483,10 +4488,19 @@
 
       const handleTabSwipeStart = (e) => {
         if (e.touches.length === 2) {
+          bgSwipeRef.current.active = false;
           const mid = getTouchMidpoint(e.touches);
           twoFingerSwipeRef.current = { active: true, startX: mid.x, startY: mid.y, curX: mid.x, curY: mid.y };
         } else {
           twoFingerSwipeRef.current.active = false;
+          if (e.touches.length === 1) {
+            const t = e.target;
+            const blocked = t && t.closest && (t.closest('[data-swipe-card]') || t.closest('input, textarea, select, [contenteditable="true"]'));
+            const touch = e.touches[0];
+            bgSwipeRef.current = { active: !blocked, startX: touch.clientX, startY: touch.clientY, curX: touch.clientX, curY: touch.clientY };
+          } else {
+            bgSwipeRef.current.active = false;
+          }
         }
       };
 
@@ -4495,6 +4509,9 @@
           const mid = getTouchMidpoint(e.touches);
           twoFingerSwipeRef.current.curX = mid.x;
           twoFingerSwipeRef.current.curY = mid.y;
+        } else if (bgSwipeRef.current.active && e.touches.length === 1) {
+          bgSwipeRef.current.curX = e.touches[0].clientX;
+          bgSwipeRef.current.curY = e.touches[0].clientY;
         }
       };
 
@@ -4513,6 +4530,21 @@
           }
         }
         state.active = false;
+
+        const bg = bgSwipeRef.current;
+        if (bg.active) {
+          const dx = bg.curX - bg.startX;
+          const dy = bg.curY - bg.startY;
+          // 背景スワイプは誤反応を避けるため、はっきりした横移動のときだけ切り替える
+          if (Math.abs(dx) >= 90 && Math.abs(dx) > Math.abs(dy) * 2) {
+            const idx = tabOrder.indexOf(currentTab);
+            const nextIdx = dx < 0
+              ? (idx + 1) % tabOrder.length
+              : (idx - 1 + tabOrder.length) % tabOrder.length;
+            switchTab(tabOrder[nextIdx]);
+          }
+        }
+        bg.active = false;
       };
 
       return (
@@ -4561,7 +4593,7 @@
                 onDoubleTap={() => setIsLandscape(true)}
                 blockUntilRef={blockClockUntilRef}
               />
-              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v6</div>
+              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v7</div>
             </div>
           </div>
 
