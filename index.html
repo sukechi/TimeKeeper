@@ -90,7 +90,7 @@
     @media (max-height: 700px) {
       .tk-tab-btn { height: 42px !important; }
       .tk-tab-pill { height: 42px !important; }
-      .tk-strip { height: calc(24px + env(safe-area-inset-bottom, 0px)) !important; }
+      .tk-strip { height: calc(34px + env(safe-area-inset-bottom, 0px)) !important; }
     }
     ::-webkit-scrollbar {
       width: 4px;
@@ -269,6 +269,30 @@
       return { h, m, s, ms, str: `${pad(h)}:${pad(m)}:${pad(s)}` };
     }
 
+    // CALC専用の解釈：接尾辞なしの数字は、2桁まで（99まで）を「秒数」として扱い分:秒へ変換する
+    // （例：90→1:30、75→1:15）。3桁以上は従来のHHMMSS右詰め解釈を優先し、
+    // それで解釈できない場合（秒・分が60以上）だけ、数字全体を秒数として変換する（例：160→2:40）。
+    function parseCalculatorToken(token) {
+      if (!token) return null;
+      if (token.endsWith("s") || token.endsWith("m")) return parseInputDigits(token);
+      const digits = token.replace(/\D/g, "");
+      if (!digits) return null;
+      if (digits.length <= 2) {
+        const ms = parseInt(digits, 10) * 1000;
+        const h = Math.floor(ms / 3600000);
+        const m = Math.floor((ms % 3600000) / 60000);
+        const s = Math.floor((ms % 60000) / 1000);
+        return { h, m, s, ms, str: `${pad(h)}:${pad(m)}:${pad(s)}` };
+      }
+      const parsed = parseInputDigits(token);
+      if (parsed) return parsed;
+      const ms = parseInt(digits, 10) * 1000;
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      return { h, m, s, ms, str: `${pad(h)}:${pad(m)}:${pad(s)}` };
+    }
+
     function parseCalculatorFormula(expr) {
       if (!expr) return 0;
       const tokens = expr.split(/([+-])/).filter(t => t !== "");
@@ -279,7 +303,7 @@
           currentOp = token;
           continue;
         }
-        const parsed = parseInputDigits(token);
+        const parsed = parseCalculatorToken(token);
         const ms = parsed ? parsed.ms : 0;
         totalMs = currentOp === "+" ? totalMs + ms : totalMs - ms;
       }
@@ -290,7 +314,7 @@
       if (!expr) return "";
       return expr.split(/([+-])/).map(token => {
         if (token === "+" || token === "-") return token;
-        const parsed = parseInputDigits(token);
+        const parsed = parseCalculatorToken(token);
         if (!parsed) return token;
 
         if (token.endsWith("s") || token.endsWith("m")) {
@@ -4678,7 +4702,7 @@
             data-tab-swipe-zone="1"
             className="tk-strip shrink-0 flex items-center justify-center border-t border-border bg-bg"
             style={{
-              height: "calc(28px + env(safe-area-inset-bottom, 0px))",
+              height: "calc(40px + env(safe-area-inset-bottom, 0px))",
               paddingBottom: "env(safe-area-inset-bottom, 0px)",
               boxSizing: "border-box"
             }}
