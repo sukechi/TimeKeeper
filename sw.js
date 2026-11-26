@@ -1,7 +1,7 @@
 // TimeKeeper Service Worker
-// 目的: アプリ本体とCDN資産をキャッシュし、オフラインでも真っ白にならないようにする。
+// 目的: アプリ本体と同梱資産をキャッシュし、オフラインでも真っ白にならないようにする。
 // 注意: index.html や資産の内容を更新したら CACHE_VERSION を上げること（古いキャッシュが破棄される）。
-const CACHE_VERSION = "tk-v13";
+const CACHE_VERSION = "tk-live-v14";
 
 const PRECACHE_URLS = [
   "./",
@@ -10,13 +10,25 @@ const PRECACHE_URLS = [
   "./icon-192.png",
   "./icon-512.png",
   "./apple-touch-icon.png",
-  "https://cdn.tailwindcss.com",
-  "https://unpkg.com/react@18/umd/react.production.min.js",
-  "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
-  "https://unpkg.com/@babel/standalone/babel.min.js",
-  "https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js",
-  "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js",
-  "https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap"
+  "./styles.css",
+  "./app.js",
+  // 第2段: ライブラリとフォントをローカル同梱化（実行時の外部通信をゼロにする）
+  "./react.production.min.js",
+  "./react-dom.production.min.js",
+  "./sortable.min.js",
+  "./fonts.css",
+  "./J7aHnp1uDWRBEqV98dVQztYldFcLowEFA87Heg.woff2",
+  "./LDI2apCSOBg7S-QT7pa8FvOleefkkbIxyyg.woff2",
+  "./LDI2apCSOBg7S-QT7pa8FvOqeefkkbIxyyg.woff2",
+  "./LDI2apCSOBg7S-QT7pa8FvOreefkkbIx.woff2",
+  "./LDI2apCSOBg7S-QT7pbYF_OleefkkbIxyyg.woff2",
+  "./LDI2apCSOBg7S-QT7pbYF_OqeefkkbIxyyg.woff2",
+  "./LDI2apCSOBg7S-QT7pbYF_OreefkkbIx.woff2",
+  "./LDIxapCSOBg7S-QT7p4GM-aGW-rOq7s.woff2",
+  "./LDIxapCSOBg7S-QT7p4HM-aGW-rO.woff2",
+  "./LDIxapCSOBg7S-QT7p4JM-aGW-rOq7s.woff2",
+  // OCRライブラリのみ従来通りCDN（キューシート読み取り使用時に遅延ロードされる設計のため）
+  "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"
 ];
 
 self.addEventListener("install", (event) => {
@@ -24,7 +36,7 @@ self.addEventListener("install", (event) => {
     const cache = await caches.open(CACHE_VERSION);
     // 1件の取得失敗で全体を止めないよう、個別にキャッシュする
     await Promise.all(PRECACHE_URLS.map(async (url) => {
-      try { await cache.add(url); } catch (e) { /* 取れた分だけで成立させる */ }
+      try { const res = await fetch(url, { cache: "reload" }); if (res && (res.ok || res.type === "opaque")) await cache.put(url, res); } catch (e) { /* 取れた分だけで成立させる */ }
     }));
     await self.skipWaiting();
   })());
