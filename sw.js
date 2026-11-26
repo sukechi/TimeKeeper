@@ -1,7 +1,7 @@
 // TimeKeeper Service Worker
 // 目的: アプリ本体と同梱資産をキャッシュし、オフラインでも真っ白にならないようにする。
 // 注意: index.html や資産の内容を更新したら CACHE_VERSION を上げること（古いキャッシュが破棄される）。
-const CACHE_VERSION = "tk-live-v14";
+const CACHE_VERSION = "tk-live-v15";
 
 const PRECACHE_URLS = [
   "./",
@@ -45,7 +45,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.filter((k) => k !== CACHE_VERSION).map((k) => caches.delete(k)));
+    await Promise.all(keys.filter((k) => k !== CACHE_VERSION && (k.startsWith("tk-live-") || k.startsWith("tk-v13"))).map((k) => caches.delete(k)));
     await self.clients.claim();
   })());
 });
@@ -63,7 +63,8 @@ self.addEventListener("fetch", (event) => {
         cache.put("./index.html", fresh.clone());
         return fresh;
       } catch (e) {
-        const cached = await caches.match("./index.html", { ignoreSearch: true });
+        const cache = await caches.open(CACHE_VERSION);
+        const cached = await cache.match("./index.html", { ignoreSearch: true });
         if (cached) return cached;
         throw e;
       }
@@ -73,11 +74,11 @@ self.addEventListener("fetch", (event) => {
 
   // それ以外の資産（CDN・フォント等）はキャッシュ優先。なければ取得して保存する
   event.respondWith((async () => {
-    const cached = await caches.match(req, { ignoreSearch: true });
+    const cache = await caches.open(CACHE_VERSION);
+    const cached = await cache.match(req, { ignoreSearch: true });
     if (cached) return cached;
     const fresh = await fetch(req);
     if (fresh && (fresh.status === 200 || fresh.type === "opaque")) {
-      const cache = await caches.open(CACHE_VERSION);
       cache.put(req, fresh.clone());
     }
     return fresh;
