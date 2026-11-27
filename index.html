@@ -233,6 +233,24 @@
       return `${sign}${timeStr}.${pad(centi)}`;
     }
 
+    // GPS自動ラップ（v13移植）: 2点間の距離(m)を haversine で計算する
+    function haversineM(lat1, lon1, lat2, lon2) {
+      const R = 6371000;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+        + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
+        * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return 2 * R * Math.asin(Math.sqrt(a));
+    }
+
+    // GPS自動ラップ（v13移植）: 1kmあたりの所要時間(ms/km)を「分:秒」表記にする
+    function formatPace(msPerKm) {
+      if (!isFinite(msPerKm) || msPerKm <= 0) return "--:--";
+      const t = Math.round(msPerKm / 1000);
+      return `${Math.floor(t / 60)}:${pad(t % 60)}`;
+    }
+
     function parseInputDigits(str) {
       if (!str) return null;
       const clean = str.trim();
@@ -3227,6 +3245,161 @@
 
       useLowPowerTrigger(running ? "high" : "none");
 
+      // ===== GPS自動ラップ（軽量版フェーズ3からv13へ移植） =====
+      // 距離・ペースは ref で保持し、表示は v13 の作法どおり再描画時に ref から読む
+      // （走行中は useLowPowerTrigger の rAF 再描画で随時更新される）。
+      // ★安全変更（参照実装との唯一の仕様差）: ページ読み込み時に測位を自動開始しない。
+      // tk_sw_gps に on:true が保存されていても起動直後は watch を張らず、
+      // ユーザーがSWタブで GPS トグルを入れるか、ストップウォッチを開始した時点で開始する。
+      const [gpsSaved] = useState(() => {
+        try {
+          const s = JSON.parse(localStorage.getItem("tk_sw_gps") || "null");
+          if (s && typeof s === "object") return s;
+        } catch(_) {}
+        return {};
+      });
+      const [gpsOn, setGpsOn] = useState(!!gpsSaved.on);
+      const [gpsLaps, setGpsLaps] = useState(() => Array.isArray(gpsSaved.laps) ? gpsSaved.laps : []);
+      const [gpsError, setGpsError] = useState("");
+      const [gpsActive, setGpsActive] = useState(false); // 測位が取れているか（トグルのドット表示用）
+      const [gpsArmed, setGpsArmed] = useState(false); // ユーザー操作で測位開始が許可されたか（起動直後は false）
+      const gpsRef = useRef({
+        last: null,
+        needBase: true,
+        distanceM: typeof gpsSaved.distanceM === "number" ? gpsSaved.distanceM : 0,
+        lastLapDistM: (Array.isArray(gpsSaved.laps) ? gpsSaved.laps.length : 0) * 1000
+      });
+      const gpsLapsRef = useRef(gpsLaps);
+      const gpsOnRef = useRef(gpsOn);
+      const runningRef = useRef(running);
+      const wakeLockRef = useRef(null);
+      useEffect(() => { gpsLapsRef.current = gpsLaps; }, [gpsLaps]);
+      useEffect(() => { gpsOnRef.current = gpsOn; }, [gpsOn]);
+      useEffect(() => { runningRef.current = running; }, [running]);
+
+      const elapsedFromRefs = () => runningRef.current
+        ? accumulatedRef.current + (Date.now() - startedAtRef.current)
+        : accumulatedRef.current;
+
+      const saveGps = () => {
+        try {
+          localStorage.setItem("tk_sw_gps", JSON.stringify({
+            on: gpsOnRef.current,
+            laps: gpsLapsRef.current,
+            distanceM: gpsRef.current.distanceM
+          }));
+        } catch(_) {}
+      };
+      useEffect(() => { saveGps(); }, [gpsOn, gpsLaps]);
+
+      const handleGpsPosition = (pos) => {
+        if (!pos || !pos.coords) return;
+        const { latitude, longitude, accuracy } = pos.coords;
+        const ts = typeof pos.timestamp === "number" ? pos.timestamp : Date.now();
+        setGpsError("");
+        setGpsActive(true);
+        const g = gpsRef.current;
+        // 精度が悪い測位点（accuracy > 20m）は捨てる
+        if (typeof accuracy === "number" && accuracy > 20) return;
+        // 積算はSW走行中のみ。停止中はアンカーだけ進め、再開時の距離ジャンプを防ぐ
+        if (!runningRef.current) { g.last = { lat: latitude, lon: longitude, ts }; return; }
+        if (!g.last || g.needBase) { g.last = { lat: latitude, lon: longitude, ts }; g.needBase = false; return; }
+        const d = haversineM(g.last.lat, g.last.lon, latitude, longitude);
+        const dt = (ts - g.last.ts) / 1000;
+        if (dt <= 0) return;
+        if (d < 3) return; // 微小移動（3m未満）は加算しない。アンカー据え置きで、貯まれば加算される
+        if (d / dt > 15) return; // 異常な速度ジャンプ（15m/s超）は捨てる
+        g.distanceM += d;
+        g.last = { lat: latitude, lon: longitude, ts };
+        // 累積1.00kmごとの自動ラップ（区間タイム=前ラップからの経過、累積タイム=全体経過）
+        if (g.distanceM >= (gpsLapsRef.current.length + 1) * 1000) {
+          const el = elapsedFromRefs();
+          const merged = [...gpsLapsRef.current];
+          let lastTotal = merged.length > 0 ? merged[merged.length - 1].total : 0;
+          while (g.distanceM >= (merged.length + 1) * 1000) {
+            merged.push({ id: Date.now() + merged.length, km: merged.length + 1, total: el, split: el - lastTotal });
+            lastTotal = el;
+          }
+          g.lastLapDistM = merged.length * 1000;
+          gpsLapsRef.current = merged;
+          setGpsLaps(merged);
+        }
+      };
+
+      const handleGpsError = (err) => {
+        setGpsActive(false);
+        if (err && err.code === 1) setGpsError("位置情報の許可が必要です");
+        else if (err && err.code === 3) setGpsError("位置情報の取得がタイムアウトしました");
+        else setGpsError("位置情報を取得できません");
+      };
+
+      // GPSウォッチは「トグルON かつ ユーザー操作で開始許可済み」のときだけ張る。
+      // ★起動直後（gpsArmed=false）は、保存状態がONでも測位を開始しない。
+      // タブは display:none で常駐するため、タブ切替では止まらない。
+      useEffect(() => {
+        if (!gpsOn || !gpsArmed) return;
+        if (!("geolocation" in navigator) || !navigator.geolocation || typeof navigator.geolocation.watchPosition !== "function") {
+          setGpsError("この環境では位置情報が使えません");
+          return;
+        }
+        gpsRef.current.needBase = true;
+        let id = null;
+        try {
+          id = navigator.geolocation.watchPosition(handleGpsPosition, handleGpsError, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+        } catch(_) {
+          setGpsError("位置情報を開始できませんでした");
+          return;
+        }
+        return () => { try { navigator.geolocation.clearWatch(id); } catch(_) {} };
+      }, [gpsOn, gpsArmed]);
+
+      // 画面常時点灯（WakeLock）: GPSオンかつ走行中だけ取得を試みる。失敗してもエラーにしない
+      const acquireWakeLock = async () => {
+        try {
+          if ("wakeLock" in navigator && !wakeLockRef.current) {
+            wakeLockRef.current = await navigator.wakeLock.request("screen");
+            wakeLockRef.current.addEventListener("release", () => { wakeLockRef.current = null; });
+          }
+        } catch(_) { /* 取得できなくても通常動作を続ける */ }
+      };
+      const releaseWakeLock = () => {
+        try { if (wakeLockRef.current) wakeLockRef.current.release(); } catch(_) {}
+        wakeLockRef.current = null;
+      };
+      useEffect(() => {
+        if (gpsOn && running) acquireWakeLock(); else releaseWakeLock();
+      }, [gpsOn, running]);
+      useEffect(() => {
+        const onVis = () => {
+          if (document.visibilityState === "visible" && gpsOnRef.current && runningRef.current) acquireWakeLock();
+        };
+        document.addEventListener("visibilitychange", onVis);
+        return () => document.removeEventListener("visibilitychange", onVis);
+      }, []);
+
+      const toggleGps = () => {
+        if (gpsOn) {
+          setGpsOn(false);
+          setGpsActive(false);
+          setGpsError("");
+          releaseWakeLock();
+        } else {
+          if (!("geolocation" in navigator)) { setGpsError("この環境では位置情報が使えません"); return; }
+          setGpsError("");
+          setGpsArmed(true); // ユーザー操作なので測位開始を許可する
+          setGpsOn(true);
+        }
+      };
+
+      const resetGps = () => {
+        gpsRef.current.distanceM = 0;
+        gpsRef.current.lastLapDistM = 0;
+        gpsRef.current.last = null;
+        gpsRef.current.needBase = true;
+        gpsLapsRef.current = [];
+        setGpsLaps([]);
+      };
+
       const elapsed = running ? accumulatedRef.current + (Date.now() - startedAtRef.current) : accumulatedRef.current;
 
       const consumedClipboardRef = useRef("");
@@ -3242,6 +3415,7 @@
         if (parsed) {
           accumulatedRef.current = parsed.ms;
           startedAtRef.current = null;
+          resetGps();
           setSwState({ running: false, accumulated: parsed.ms, startedAt: null, laps: [] });
           setCustomLaps2([]);
         }
@@ -3252,15 +3426,19 @@
           const finalElapsed = accumulatedRef.current + (Date.now() - startedAtRef.current);
           accumulatedRef.current = finalElapsed;
           setSwState(prev => ({ ...prev, running: false, accumulated: finalElapsed, startedAt: null }));
+          saveGps();
         } else {
           const now = Date.now();
           startedAtRef.current = now;
+          gpsRef.current.needBase = true; // 再開後の最初の測位点を新しいアンカーにする
+          if (gpsOnRef.current) setGpsArmed(true); // ★保存ONのまま未開始なら、SW開始を機に測位を開始する
           setSwState(prev => ({ ...prev, running: true, startedAt: now }));
         }
       };
 
       const resetAll = () => {
         accumulatedRef.current = 0;
+        resetGps();
         setSwState({ running: false, accumulated: 0, startedAt: null, laps: [] });
         setCustomLaps2([]);
       };
@@ -3300,6 +3478,22 @@
       const currentLapTime = elapsed - lastLapTotal;
       const formatLapNum = (num) => diffMode ? `${num}→${num + 1}` : `#${num}`;
 
+      // GPS表示値（再描画時に ref と現在の経過から算出する。v13の elapsed と同じ作法）
+      const gpsView = (() => {
+        const g = gpsRef.current;
+        const lastGpsLap = gpsLaps.length > 0 ? gpsLaps[gpsLaps.length - 1] : null;
+        const segDist = g.distanceM - g.lastLapDistM;
+        const segTime = elapsed - (lastGpsLap ? lastGpsLap.total : 0);
+        let paceMs = null;
+        if (segDist >= 30 && segTime > 0) paceMs = segTime / segDist * 1000;
+        else if (g.distanceM >= 30 && elapsed > 0) paceMs = elapsed / g.distanceM * 1000;
+        return {
+          distStr: (g.distanceM / 1000).toFixed(2),
+          paceStr: paceMs !== null ? formatPace(paceMs) : "--:--",
+          lastPaceStr: lastGpsLap ? formatPace(lastGpsLap.split) : "--:--"
+        };
+      })();
+
       return (
         <div className="h-full flex flex-col p-[8px_10px] gap-2 overflow-hidden">
           {/* ストップウォッチメイン表示ウィンドウ */}
@@ -3317,6 +3511,20 @@
               }}
             >
               RST
+            </button>
+
+            {/* GPS自動ラップのトグル（メイン枠内・右上） */}
+            <button
+              onClick={toggleGps}
+              className="absolute top-2 right-2.5 px-[10px] py-[3px] bg-transparent border rounded-[6px] text-[9px] tracking-[1px] font-mono font-bold transition-all duration-150 z-20 no-drag active:scale-95 flex items-center gap-1"
+              style={{
+                borderColor: gpsOn ? colors.cyan : colors.border,
+                color: gpsOn ? colors.cyan : colors.muted
+              }}
+            >
+              <span className="w-[6px] h-[6px] rounded-full inline-block shrink-0 transition-all duration-150"
+                    style={{ background: gpsOn ? (gpsActive ? colors.cyan : colors.amber) : colors.gray, boxShadow: gpsOn && gpsActive ? `0 0 5px ${colors.cyan}` : 'none' }} />
+              GPS {gpsOn ? "ON" : "OFF"}
             </button>
 
             {/* 赤枠位置: メイン枠内・左下に#1ボタンを配置（LAP1ボタンと重ならず隙間を確保） */}
@@ -3356,6 +3564,33 @@
                 </div>
               </div>
             </div>
+
+            {/* GPS自動ラップ: 距離・現在ペース・直近ラップペース（GPS使用時のみ表示） */}
+            {(gpsOn || gpsLaps.length > 0 || gpsError) && (
+              <div className="mt-1 pt-2 border-t border-border/30 relative z-10">
+                <div className="flex items-end justify-around px-1">
+                  <div className="text-center">
+                    <div style={{ ...labelStyle, fontSize: 8 }}>距離</div>
+                    <div className="font-mono text-[30px] leading-[1.1] text-cyanCustom">
+                      {gpsView.distStr}<span className="text-[12px] text-mutedCustom"> km</span>
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div style={{ ...labelStyle, fontSize: 8 }}>ペース /km</div>
+                    <div className="font-mono text-[22px] leading-[1.1] text-whiteCustom">{gpsView.paceStr}</div>
+                  </div>
+                  <div className="text-center">
+                    <div style={{ ...labelStyle, fontSize: 8 }}>前LAP /km</div>
+                    <div className="font-mono text-[22px] leading-[1.1] text-whiteCustom">{gpsView.lastPaceStr}</div>
+                  </div>
+                </div>
+                {gpsError ? (
+                  <div className="text-center font-sans text-[10px] mt-1 px-[70px]" style={{ color: colors.red }}>{gpsError}</div>
+                ) : gpsOn ? (
+                  <div className="text-center font-sans text-[9px] text-mutedCustom mt-1 px-[70px]">画面を消すとGPSが止まります（測位中は画面をつけたままにしてください）</div>
+                ) : null}
+              </div>
+            )}
           </div>
 
           {/* 操作ボタン列（LAP1ボタンの上の被りを解消） */}
@@ -3391,6 +3626,20 @@
               <div className="text-[8px] text-mutedCustom font-sans">累積</div>
             </button>
           </div>
+
+          {/* GPS自動ラップの一覧（距離つきチップ列、新しい順） */}
+          {gpsLaps.length > 0 && (
+            <div className="shrink-0 flex gap-1.5 overflow-x-auto no-scrollbar no-drag">
+              {[...gpsLaps].reverse().map((lap) => (
+                <div key={lap.id} className="shrink-0 bg-card border rounded-[8px] px-2 py-1 flex items-baseline gap-1.5"
+                     style={{ borderColor: colors.cyan + "55" }}>
+                  <span className="font-mono text-[10px] font-bold text-cyanCustom">{lap.km}km</span>
+                  <span className="font-mono text-[15px] text-whiteCustom">{formatTimeMs(lap.split)}</span>
+                  <span className="font-mono text-[9px] text-mutedCustom">計 {formatTimeMs(lap.total)}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="flex-1 min-h-0 flex gap-1.5 overflow-hidden">
             <div className="flex-1 min-h-0 bg-card border border-border rounded-xl overflow-hidden flex flex-col">
@@ -4629,7 +4878,7 @@
                 onDoubleTap={() => setIsLandscape(true)}
                 blockUntilRef={blockClockUntilRef}
               />
-              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v13</div>
+              <div className="text-[8px] leading-none pr-1" style={{ color: colors.muted }}>v13+GPS</div>
             </div>
           </div>
 
